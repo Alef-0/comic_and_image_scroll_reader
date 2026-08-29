@@ -7,18 +7,43 @@ from .models import ComicPage, PagePosition
 
 
 def arrange_pages(
-    pages: Sequence[ComicPage], page_width: int, viewport_width: int
+    pages: Sequence[ComicPage],
+    page_width: int | Sequence[int],
+    viewport_width: int,
+    *,
+    dual_page: bool = False,
+    manga_reading: bool = False,
 ) -> list[PagePosition]:
-    """Stack scaled pages vertically and center them in the viewport."""
+    """Arrange pages in a centered strip, optionally pairing pages after one."""
+    widths = (
+        [page_width] * len(pages)
+        if isinstance(page_width, int)
+        else list(page_width)
+    )
     cursor_y = 0
-    x = (viewport_width - page_width) // 2
     positions: list[PagePosition] = []
-    for page in pages:
-        scaled_height = max(
-            1, round(page.native_height * page_width / page.native_width)
+    index = 0
+    while index < len(pages):
+        row_indices = (
+            [index]
+            if not dual_page or index == 0
+            else list(range(index, min(index + 2, len(pages))))
         )
-        positions.append(PagePosition(x, cursor_y, page_width, scaled_height))
-        cursor_y += scaled_height
+        display_indices = list(reversed(row_indices)) if manga_reading else row_indices
+        row_width = sum(widths[item] for item in row_indices)
+        cursor_x = (viewport_width - row_width) // 2
+        row_height = 0
+        row_positions: dict[int, PagePosition] = {}
+        for item in display_indices:
+            width = widths[item]
+            page = pages[item]
+            height = max(1, round(page.native_height * width / page.native_width))
+            row_positions[item] = PagePosition(cursor_x, cursor_y, width, height)
+            cursor_x += width
+            row_height = max(row_height, height)
+        positions.extend(row_positions[item] for item in row_indices)
+        cursor_y += row_height
+        index += len(row_indices)
     return positions
 
 
@@ -26,7 +51,23 @@ def visible_page_range(
     positions: Sequence[PagePosition], scroll_y: int, viewport_height: int
 ) -> tuple[int, int]:
     """Return the half-open range of pages visible in the viewport."""
-    first = bisect_right(positions, scroll_y, key=lambda position: position.bottom)
+    if not positions:
+        return 0, 0
+
+    first = max(0, bisect_right(positions, scroll_y, key=lambda position: position.y) - 1)
+    while first > 0 and positions[first - 1].y == positions[first].y:
+        first -= 1
+    while first < len(positions):
+        row_y = positions[first].y
+        row_end = first
+        row_bottom = 0
+        while row_end < len(positions) and positions[row_end].y == row_y:
+            row_bottom = max(row_bottom, positions[row_end].bottom)
+            row_end += 1
+        if row_bottom > scroll_y:
+            break
+        first = row_end
+
     viewport_bottom = scroll_y + viewport_height
     last = first
     while last < len(positions) and positions[last].y < viewport_bottom:

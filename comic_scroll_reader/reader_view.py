@@ -68,6 +68,9 @@ class ComicStrip:
         pages: list[ComicPage],
         folder: Path,
         desktop_width: int,
+        *,
+        dual_page: bool = False,
+        manga_reading: bool = False,
     ) -> None:
         self.window = window
         self.canvas: tk.Canvas = window["-CANVAS-"].TKCanvas
@@ -78,6 +81,9 @@ class ComicStrip:
         self.viewport_height = max(1, self.canvas.winfo_height())
         self.prevent_image_upscale = False
         self.stop_at_fit_width = True
+        self.dual_page = dual_page
+        self.manga_reading = manga_reading
+        self.original_size = False
         initial_width = max(1, round(desktop_width * self.START_WIDTH_RATIO))
         self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
@@ -115,7 +121,7 @@ class ComicStrip:
 
     @property
     def content_height(self) -> int:
-        return self.positions[-1].bottom if self.positions else 0
+        return max((position.bottom for position in self.positions), default=0)
 
     @property
     def maximum_scroll(self) -> int:
@@ -212,6 +218,11 @@ class ComicStrip:
 
     def _finish_resize(self) -> None:
         self._resize_job = None
+        if self.original_size:
+            self._arrange_strip()
+            self.paint()
+            self._show_status()
+            return
         maximum = self._maximum_strip_width()
         if self.strip_width > maximum:
             self._set_strip_width(maximum, self.viewport_height // 2)
@@ -241,8 +252,15 @@ class ComicStrip:
         return "break"
 
     def _arrange_strip(self) -> None:
+        page_widths: int | list[int] = self.strip_width
+        if self.original_size:
+            page_widths = [self._original_page_width(index) for index in range(len(self.pages))]
         self.positions = arrange_pages(
-            self.pages, self.strip_width, self.viewport_width
+            self.pages,
+            page_widths,
+            self.viewport_width,
+            dual_page=self.dual_page,
+            manga_reading=self.manga_reading,
         )
         self.scroll_y = clamp_scroll(
             self.scroll_y, self.content_height, self.viewport_height
@@ -347,10 +365,12 @@ class ComicStrip:
         return self._set_strip_width(new_width, anchor)
 
     def _set_strip_width(self, new_width: int, anchor: int) -> bool:
-        if new_width == self.strip_width:
+        was_original_size = self.original_size
+        if new_width == self.strip_width and not was_original_size:
             return False
         old_height = max(1, self.content_height)
         reading_position = (self.scroll_y + anchor) / old_height
+        self.original_size = False
         self.strip_width = new_width
         self._arrange_strip()
         anchored_scroll = round(reading_position * self.content_height - anchor)
@@ -363,10 +383,34 @@ class ComicStrip:
 
     def fit_width(self) -> None:
         self.stop_zooming()
-        target_width = self.viewport_width
+        columns = 2 if self.dual_page else 1
+        target_width = max(1, self.viewport_width // columns)
         if self.prevent_image_upscale:
             target_width = min(target_width, self._native_width_limit())
         self._set_strip_width(target_width, self.viewport_height // 2)
+
+    def show_original_size(self) -> None:
+        """Display every page at native size, reducing only to obey fit limits."""
+        self.stop_zooming()
+        old_height = max(1, self.content_height)
+        anchor = self.viewport_height // 2
+        reading_position = (self.scroll_y + anchor) / old_height
+        self.original_size = True
+        self._arrange_strip()
+        self.scroll_y = clamp_scroll(
+            round(reading_position * self.content_height - anchor),
+            self.content_height,
+            self.viewport_height,
+        )
+        self.paint(priority_y=anchor)
+        self._show_status()
+
+    def _original_page_width(self, index: int) -> int:
+        native_width = self.pages[index].native_width
+        if not self.stop_at_fit_width:
+            return native_width
+        columns = 2 if self.dual_page and index > 0 else 1
+        return min(native_width, max(1, self.viewport_width // columns))
 
     def _native_width_limit(self) -> int:
         return min((page.native_width for page in self.pages), default=1)
@@ -374,7 +418,8 @@ class ComicStrip:
     def _maximum_strip_width(self) -> int:
         maximum = max(1, round(self.desktop_width * self.MAX_WIDTH_RATIO))
         if self.stop_at_fit_width:
-            maximum = min(maximum, self.viewport_width)
+            columns = 2 if self.dual_page else 1
+            maximum = min(maximum, max(1, self.viewport_width // columns))
         if self.prevent_image_upscale:
             maximum = min(maximum, self._native_width_limit())
         return max(1, maximum)
@@ -385,14 +430,38 @@ class ComicStrip:
         self.stop_zooming()
         self.prevent_image_upscale = prevent_image_upscale
         self.stop_at_fit_width = stop_at_fit_width
+        if self.original_size:
+            self._arrange_strip()
+            self.paint()
+            self._show_status()
+            return
         maximum = self._maximum_strip_width()
         if self.strip_width > maximum:
             self._set_strip_width(maximum, self.viewport_height // 2)
+
+    def set_page_layout(self, *, dual_page: bool, manga_reading: bool) -> None:
+        self.stop_zooming()
+        old_height = max(1, self.content_height)
+        anchor = self.viewport_height // 2
+        reading_position = (self.scroll_y + anchor) / old_height
+        self.dual_page = dual_page
+        self.manga_reading = manga_reading
+        if not self.original_size:
+            self.strip_width = min(self.strip_width, self._maximum_strip_width())
+        self._arrange_strip()
+        self.scroll_y = clamp_scroll(
+            round(reading_position * self.content_height - anchor),
+            self.content_height,
+            self.viewport_height,
+        )
+        self.paint(priority_y=anchor)
+        self._show_status()
 
     def open_bookshelf(self, pages: list[ComicPage], folder: Path) -> None:
         self.stop_zooming()
         self.pages = pages
         self.folder = folder
+        self.original_size = False
         initial_width = max(1, round(self.viewport_width * self.START_WIDTH_RATIO))
         self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
@@ -560,8 +629,11 @@ class ComicStrip:
             )
 
     def _show_status(self) -> None:
-        zoom = round(100 * self.strip_width / max(1, self.viewport_width))
+        if self.original_size:
+            zoom = "Original"
+        else:
+            zoom = f"{round(100 * self.strip_width / max(1, self.viewport_width))}%"
         self.window["-STATUS-"].update(
             f"{self.folder.name}  •  {len(self.pages)} pages  •  "
-            f"{zoom}%  •  {self.image_resizer.backend_name}"
+            f"{zoom}  •  {self.image_resizer.backend_name}"
         )

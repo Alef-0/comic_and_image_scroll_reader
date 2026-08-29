@@ -33,6 +33,45 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(visible_page_range(positions, 400, 100), (1, 2))
         self.assertEqual(visible_page_range(positions, 450, 100), (1, 3))
 
+    def test_dual_page_keeps_first_solo_and_pairs_the_rest(self) -> None:
+        pages = self.pages + [ComicPage(Path("four.png"), 100, 300)]
+
+        positions = arrange_pages(
+            pages, page_width=100, viewport_width=400, dual_page=True
+        )
+
+        self.assertEqual(
+            [(item.x, item.y, item.width, item.height) for item in positions],
+            [
+                (150, 0, 100, 200),
+                (100, 200, 100, 50),
+                (200, 200, 100, 100),
+                (150, 300, 100, 300),
+            ],
+        )
+        self.assertEqual(visible_page_range(positions, 260, 40), (1, 3))
+
+    def test_manga_reading_reverses_each_pair_but_not_page_order(self) -> None:
+        positions = arrange_pages(
+            self.pages,
+            page_width=100,
+            viewport_width=400,
+            dual_page=True,
+            manga_reading=True,
+        )
+
+        self.assertEqual([item.x for item in positions], [150, 200, 100])
+
+    def test_arrangement_accepts_native_width_for_each_page(self) -> None:
+        positions = arrange_pages(
+            self.pages, page_width=[100, 200, 75], viewport_width=500
+        )
+
+        self.assertEqual(
+            [(item.width, item.height) for item in positions],
+            [(100, 200), (200, 100), (75, 75)],
+        )
+
     def test_scroll_is_clamped_to_the_strip(self) -> None:
         self.assertEqual(clamp_scroll(-20, 1_000, 300), 0)
         self.assertEqual(clamp_scroll(900, 1_000, 300), 700)

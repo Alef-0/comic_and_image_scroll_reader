@@ -80,6 +80,19 @@ Or open an image folder directly:
 python3 run_reader.py /path/to/comic
 ```
 
+The reader starts maximized by default. To start in a normal window instead:
+
+```bash
+python3 run_reader.py --windowed /path/to/comic
+```
+
+Start with paired pages, optionally using manga (right-to-left) order:
+
+```bash
+python3 run_reader.py --dual-page /path/to/comic
+python3 run_reader.py --dual-page --manga /path/to/comic
+```
+
 ## Tests
 
 ```bash
@@ -90,3 +103,7 @@ Use the mouse wheel or arrow keys to scroll, Ctrl+wheel to zoom, F11 for
 fullscreen, and Escape to close the reader. Zoom stops at the fitted window
 width by default; clear **Stop at fit width** to zoom farther, or enable
 **Don't enlarge images** to keep every page at or below its native width.
+**Original Size** uses each image's native dimensions, reducing only images
+that would exceed their available width while **Stop at fit width** is active.
+In dual-page mode the cover remains alone and later pages are paired; **Manga
+order** swaps the left and right pages in each pair.

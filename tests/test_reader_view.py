@@ -37,6 +37,7 @@ class ReaderViewTests(unittest.TestCase):
         reader.viewport_width = 700
         reader.stop_at_fit_width = True
         reader.prevent_image_upscale = False
+        reader.dual_page = False
         reader.pages = [
             ComicPage(Path("wide.png"), 900, 1_200),
             ComicPage(Path("narrow.png"), 600, 1_200),
@@ -45,6 +46,32 @@ class ReaderViewTests(unittest.TestCase):
         self.assertEqual(reader._maximum_strip_width(), 700)
         reader.prevent_image_upscale = True
         self.assertEqual(reader._maximum_strip_width(), 600)
+
+    def test_dual_page_fit_width_allows_half_the_viewport_per_page(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.desktop_width = 1_000
+        reader.viewport_width = 700
+        reader.stop_at_fit_width = True
+        reader.prevent_image_upscale = False
+        reader.dual_page = True
+
+        self.assertEqual(reader._maximum_strip_width(), 350)
+
+    def test_original_size_only_reduces_pages_that_exceed_available_width(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 700
+        reader.stop_at_fit_width = True
+        reader.dual_page = True
+        reader.pages = [
+            ComicPage(Path("cover.png"), 900, 1_200),
+            ComicPage(Path("small.png"), 300, 500),
+            ComicPage(Path("large.png"), 600, 900),
+        ]
+
+        self.assertEqual(
+            [reader._original_page_width(index) for index in range(3)],
+            [700, 300, 350],
+        )
 
     def test_opposite_zoom_replaces_the_stash(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)

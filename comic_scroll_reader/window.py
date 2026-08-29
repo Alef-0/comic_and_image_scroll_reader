@@ -8,6 +8,7 @@ import FreeSimpleGUI as sg
 
 
 FALLBACK_DESKTOP_SIZE = (1280, 720)
+WINDOWED_SIZE_RATIO = (0.75, 0.80)
 CANVAS_COLOR = "#1c1c1c"
 UI_FONT = ("TkDefaultFont", 10, "bold")
 
@@ -55,26 +56,73 @@ def ask_for_bookshelf(
     return Path(selected).expanduser() if selected else None
 
 
-def build_reader_window() -> sg.Window:
+def windowed_size(desktop_width: int, desktop_height: int) -> tuple[int, int]:
+    """Return a useful initial size while preserving room around the window."""
+    width_ratio, height_ratio = WINDOWED_SIZE_RATIO
+    return (
+        max(1, round(desktop_width * width_ratio)),
+        max(1, round(desktop_height * height_ratio)),
+    )
+
+
+def build_reader_window(
+    size: tuple[int, int] | None = None,
+    *,
+    dual_page: bool = False,
+    manga_reading: bool = False,
+) -> sg.Window:
     sg.theme("DarkGrey13")
     sg.set_options(font=UI_FONT)
     controls = [
-        sg.Button("Open Folder", key="-OPEN-"),
-        sg.Button("−", key="-ZOOM-OUT-", tooltip="Zoom out (Ctrl+-)"),
-        sg.Button("+", key="-ZOOM-IN-", tooltip="Zoom in (Ctrl++)"),
-        sg.Button("Fit Width", key="-FIT-"),
-        sg.Button("Fullscreen", key="-FULLSCREEN-", tooltip="Toggle fullscreen (F11)"),
-        sg.Checkbox(
-            "Don't enlarge images",
-            default=False,
-            key="-LIMIT-NATIVE-",
-            enable_events=True,
+        sg.Frame("File", [[sg.Button("Open Folder", key="-OPEN-")]]),
+        sg.Frame(
+            "Image size",
+            [
+                [
+                    sg.Button("−", key="-ZOOM-OUT-", tooltip="Zoom out (Ctrl+-)"),
+                    sg.Button("+", key="-ZOOM-IN-", tooltip="Zoom in (Ctrl++)"),
+                    sg.Button("Fit Width", key="-FIT-"),
+                    sg.Button("Original Size", key="-ORIGINAL-SIZE-"),
+                ],
+                [
+                    sg.Checkbox(
+                        "Don't enlarge images",
+                        default=False,
+                        key="-LIMIT-NATIVE-",
+                        enable_events=True,
+                    ),
+                    sg.Checkbox(
+                        "Stop at fit width",
+                        default=True,
+                        key="-LIMIT-FIT-",
+                        enable_events=True,
+                    ),
+                ],
+            ],
         ),
-        sg.Checkbox(
-            "Stop at fit width",
-            default=True,
-            key="-LIMIT-FIT-",
-            enable_events=True,
+        sg.Frame(
+            "Page layout",
+            [
+                [
+                    sg.Checkbox(
+                        "Dual page",
+                        default=dual_page,
+                        key="-DUAL-PAGE-",
+                        enable_events=True,
+                    ),
+                    sg.Checkbox(
+                        "Manga order",
+                        default=manga_reading,
+                        key="-MANGA-READING-",
+                        enable_events=True,
+                        tooltip="Show paired pages from right to left",
+                    ),
+                ]
+            ],
+        ),
+        sg.Frame(
+            "Window",
+            [[sg.Button("Fullscreen", key="-FULLSCREEN-", tooltip="Toggle fullscreen (F11)")]],
         ),
         sg.Text("", key="-STATUS-", expand_x=True, justification="right"),
     ]
@@ -95,6 +143,7 @@ def build_reader_window() -> sg.Window:
         layout,
         margins=(0, 0),
         resizable=True,
+        size=size,
         finalize=True,
         use_default_focus=False,
     )
