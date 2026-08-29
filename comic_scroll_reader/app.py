@@ -6,9 +6,9 @@ from pathlib import Path
 
 import FreeSimpleGUI as sg
 
-from .bookshelf import scan_bookshelf
-from .reader_view import ComicStrip
-from .window import (
+from .files.bookshelf import scan_bookshelf
+from .ui.reader_view import ComicStrip
+from .ui.window import (
     ask_for_bookshelf,
     build_reader_window,
     desktop_size,

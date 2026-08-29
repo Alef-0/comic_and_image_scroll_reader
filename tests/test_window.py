@@ -1,6 +1,6 @@
 import unittest
 
-from comic_scroll_reader.window import (
+from comic_scroll_reader.ui.window import (
     TOP_BAR_KEY,
     TOP_BAR_TOGGLE_KEY,
     toggle_collapsible_group,

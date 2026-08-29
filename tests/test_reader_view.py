@@ -4,8 +4,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from comic_scroll_reader.reader_view import ComicStrip, _resize_filter
-from comic_scroll_reader.models import ComicPage
+from comic_scroll_reader.core.models import ComicPage
+from comic_scroll_reader.ui.reader_view import ComicStrip, _resize_filter
 
 
 class FakeCanvas:

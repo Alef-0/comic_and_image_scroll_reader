@@ -9,17 +9,17 @@ from tkinter import ttk
 import FreeSimpleGUI as sg
 from PIL import Image, ImageTk
 
-from .bookshelf import open_page
-from .image_resizer import ImageResizer
-from .layout import (
+from ..core.layout import (
     arrange_pages,
     clamp_scroll,
     neighboring_page_indices,
     pages_nearest_to,
     visible_page_range,
 )
-from .memory import MemoryShelf
-from .models import ComicPage, PagePosition
+from ..core.memory import MemoryShelf
+from ..core.models import ComicPage, PagePosition
+from ..files.bookshelf import open_page
+from ..imaging.image_resizer import ImageResizer
 from .window import CANVAS_COLOR
 
 

@@ -6,7 +6,7 @@ import sys
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .models import ComicPage
+from ..core.models import ComicPage
 
 
 IMAGE_SUFFIXES = frozenset(
@@ -66,4 +66,3 @@ def scan_bookshelf(folder: Path) -> list[ComicPage]:
         if width > 0 and height > 0:
             pages.append(ComicPage(file, width, height))
     return pages
-

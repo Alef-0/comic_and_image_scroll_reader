@@ -1,6 +1,6 @@
 import unittest
 
-from comic_scroll_reader.memory import MemoryShelf
+from comic_scroll_reader.core.memory import MemoryShelf
 
 
 class MemoryShelfTests(unittest.TestCase):

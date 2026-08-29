@@ -2,7 +2,7 @@ import unittest
 
 from PIL import Image
 
-from comic_scroll_reader.image_resizer import ImageResizer
+from comic_scroll_reader.imaging.image_resizer import ImageResizer
 
 
 class FakeGpuMat:

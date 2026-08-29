@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from comic_scroll_reader.bookshelf import natural_file_key, scan_bookshelf
+from comic_scroll_reader.files.bookshelf import natural_file_key, scan_bookshelf
 
 
 class BookshelfTests(unittest.TestCase):

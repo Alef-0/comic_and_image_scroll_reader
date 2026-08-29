@@ -1,14 +1,14 @@
 import unittest
 from pathlib import Path
 
-from comic_scroll_reader.layout import (
+from comic_scroll_reader.core.layout import (
     arrange_pages,
     clamp_scroll,
     neighboring_page_indices,
     pages_nearest_to,
     visible_page_range,
 )
-from comic_scroll_reader.models import ComicPage
+from comic_scroll_reader.core.models import ComicPage
 
 
 class LayoutTests(unittest.TestCase):
