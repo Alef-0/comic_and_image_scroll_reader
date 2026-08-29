@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from pathlib import Path
 import tkinter as tk
+from tkinter import ttk
 
 import FreeSimpleGUI as sg
 from PIL import Image, ImageTk
@@ -69,6 +70,13 @@ class ComicStrip:
         self.canvas.configure(
             background=CANVAS_COLOR, borderwidth=0, highlightthickness=0
         )
+        # Overlaying the scrollbar keeps the comic's drawing width unchanged.
+        self.scrollbar = ttk.Scrollbar(
+            self.canvas,
+            orient=tk.VERTICAL,
+            command=self._scrollbar_moved,
+        )
+        self.scrollbar.place(relx=1.0, rely=0, relheight=1.0, anchor="ne")
         self._connect_controls()
         self._arrange_strip()
         self.paint()
@@ -88,6 +96,9 @@ class ComicStrip:
         self.canvas.bind("<Button-5>", self._wheel_moved)
         self.canvas.bind("<Configure>", self._canvas_resized)
         self.canvas.bind("<Button-1>", lambda _event: self.canvas.focus_set())
+        self.scrollbar.bind("<MouseWheel>", self._wheel_moved)
+        self.scrollbar.bind("<Button-4>", self._wheel_moved)
+        self.scrollbar.bind("<Button-5>", self._wheel_moved)
 
         one_screen = lambda: max(1, self.viewport_height - 50)
         shortcuts: dict[str, Callable[[], None]] = {
@@ -230,12 +241,28 @@ class ComicStrip:
         return photo
 
     def scroll(self, pixels: int) -> None:
-        target = clamp_scroll(
-            self.scroll_y + pixels, self.content_height, self.viewport_height
-        )
+        self.scroll_to(self.scroll_y + pixels)
+
+    def scroll_to(self, position: int | float) -> None:
+        """Move directly to a position selected on the scrollbar."""
+        target = clamp_scroll(round(position), self.content_height, self.viewport_height)
         if target != self.scroll_y:
             self.scroll_y = target
             self.paint()
+
+    def _scrollbar_moved(
+        self, action: str, amount: str, unit: str | None = None
+    ) -> None:
+        if action == "moveto":
+            self.scroll_to(float(amount) * self.content_height)
+            return
+        if action == "scroll":
+            distance = (
+                max(1, self.viewport_height - 50)
+                if unit == "pages"
+                else self.WHEEL_STEP
+            )
+            self.scroll(int(amount) * distance)
 
     def zoom(self, steps: int, anchor_y: int | None = None) -> None:
         if steps == 0:
@@ -332,9 +359,21 @@ class ComicStrip:
         self._preload_job = self.canvas.after(
             self.PRELOAD_DELAY_MS, self._warm_neighbor_pages
         )
+        self._sync_scrollbar()
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the
         # reader feel immediate without forcing a full event-loop update.
         self.canvas.update_idletasks()
+
+    def _sync_scrollbar(self) -> None:
+        if self.content_height <= self.viewport_height:
+            self.scrollbar.set(0.0, 1.0)
+            self.scrollbar.state(["disabled"])
+            return
+        self.scrollbar.state(["!disabled"])
+        self.scrollbar.set(
+            self.scroll_y / self.content_height,
+            (self.scroll_y + self.viewport_height) / self.content_height,
+        )
 
     def _warm_neighbor_pages(self) -> None:
         self._preload_job = None
