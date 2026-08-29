@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comic-and-image-scroll-reader"
+version = "1.0.0"
+description = "Read a folder of images as one continuous scrolling comic"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "FreeSimpleGUI>=5.1",
+    "Pillow>=10.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["comic_scroll_reader*"]
+
