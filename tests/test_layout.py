@@ -1,7 +1,13 @@
 import unittest
 from pathlib import Path
 
-from comic_scroll_reader.layout import arrange_pages, clamp_scroll, visible_page_range
+from comic_scroll_reader.layout import (
+    arrange_pages,
+    clamp_scroll,
+    neighboring_page_indices,
+    pages_nearest_to,
+    visible_page_range,
+)
 from comic_scroll_reader.models import ComicPage
 
 
@@ -30,6 +36,14 @@ class LayoutTests(unittest.TestCase):
     def test_scroll_is_clamped_to_the_strip(self) -> None:
         self.assertEqual(clamp_scroll(-20, 1_000, 300), 0)
         self.assertEqual(clamp_scroll(900, 1_000, 300), 700)
+
+    def test_prioritizes_the_page_containing_the_zoom_anchor(self) -> None:
+        positions = arrange_pages(self.pages, page_width=200, viewport_width=500)
+
+        self.assertEqual(pages_nearest_to(positions, [0, 1, 2], 450), [1, 2, 0])
+
+    def test_selects_two_neighbor_pages_in_each_direction(self) -> None:
+        self.assertEqual(neighboring_page_indices(3, 5, 8, 2), [2, 5, 1, 6])
 
 
 if __name__ == "__main__":

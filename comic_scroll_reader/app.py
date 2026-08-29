@@ -25,6 +25,7 @@ def read_arguments(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _open_another_folder(reader: ComicStrip) -> None:
+    reader.stop_zooming()
     selected = ask_for_bookshelf(reader.folder, reader.window.TKroot)
     if selected is None:
         return
@@ -58,9 +59,15 @@ def run_reader(folder: Path) -> int:
             "-FULLSCREEN-": reader.toggle_fullscreen,
         }
         while not reader.should_close:
-            event, _values = window.read(timeout=50)
+            event, values = window.read(timeout=50)
             if event == sg.WIN_CLOSED:
                 break
+            if event in {"-LIMIT-NATIVE-", "-LIMIT-FIT-"}:
+                reader.set_zoom_limits(
+                    prevent_image_upscale=bool(values["-LIMIT-NATIVE-"]),
+                    stop_at_fit_width=bool(values["-LIMIT-FIT-"]),
+                )
+                continue
             action = actions.get(event)
             if action is not None:
                 action()
@@ -73,4 +80,3 @@ def main(argv: list[str] | None = None) -> int:
     arguments = read_arguments(argv)
     folder = arguments.folder.expanduser() if arguments.folder else ask_for_bookshelf()
     return 0 if folder is None else run_reader(folder)
-

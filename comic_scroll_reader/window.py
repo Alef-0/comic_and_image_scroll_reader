@@ -64,6 +64,18 @@ def build_reader_window() -> sg.Window:
         sg.Button("+", key="-ZOOM-IN-", tooltip="Zoom in (Ctrl++)"),
         sg.Button("Fit Width", key="-FIT-"),
         sg.Button("Fullscreen", key="-FULLSCREEN-", tooltip="Toggle fullscreen (F11)"),
+        sg.Checkbox(
+            "Don't enlarge images",
+            default=False,
+            key="-LIMIT-NATIVE-",
+            enable_events=True,
+        ),
+        sg.Checkbox(
+            "Stop at fit width",
+            default=True,
+            key="-LIMIT-FIT-",
+            enable_events=True,
+        ),
         sg.Text("", key="-STATUS-", expand_x=True, justification="right"),
     ]
     layout = [

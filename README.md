@@ -30,4 +30,6 @@ python3 -m unittest discover -s tests -v
 ```
 
 Use the mouse wheel or arrow keys to scroll, Ctrl+wheel to zoom, F11 for
-fullscreen, and Escape to close the reader.
+fullscreen, and Escape to close the reader. Zoom stops at the fitted window
+width by default; clear **Stop at fit width** to zoom farther, or enable
+**Don't enlarge images** to keep every page at or below its native width.

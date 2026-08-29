@@ -1,5 +1,6 @@
 """Virtualized, scrollable comic canvas."""
 
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 import tkinter as tk
@@ -9,7 +10,13 @@ import FreeSimpleGUI as sg
 from PIL import Image, ImageTk
 
 from .bookshelf import open_page
-from .layout import arrange_pages, clamp_scroll, visible_page_range
+from .layout import (
+    arrange_pages,
+    clamp_scroll,
+    neighboring_page_indices,
+    pages_nearest_to,
+    visible_page_range,
+)
 from .memory import MemoryShelf
 from .models import ComicPage, PagePosition
 from .window import CANVAS_COLOR
@@ -27,6 +34,15 @@ def _photo_bytes(key: PhotoKey, _photo: ImageTk.PhotoImage) -> int:
     return key[1] * key[2] * 4
 
 
+def _resize_filter(
+    source_size: tuple[int, int], target_size: tuple[int, int]
+) -> Image.Resampling:
+    """Use Lanczos3 for reductions and smooth bilinear enlargement."""
+    if target_size[0] > source_size[0] or target_size[1] > source_size[1]:
+        return Image.Resampling.BILINEAR
+    return Image.Resampling.LANCZOS
+
+
 class ComicStrip:
     """Manage page geometry, rendering, input, and image caches."""
 
@@ -34,10 +50,15 @@ class ComicStrip:
     MIN_WIDTH_RATIO = 0.10
     MAX_WIDTH_RATIO = 4.0
     ZOOM_FACTOR = 1.10
+    ZOOM_STEP_DELAY_MS = 1
     WHEEL_STEP = 120
     SOURCE_CACHE_BYTES = 256 * 1024 * 1024
     PHOTO_CACHE_BYTES = 192 * 1024 * 1024
+    IMMEDIATE_RENDER_COUNT = 2
+    RENDER_STEP_DELAY_MS = 1
     PRELOAD_DELAY_MS = 150
+    PRELOAD_STEP_DELAY_MS = 10
+    PRELOAD_DISTANCE = 2
     CONTROL_MASK = 0x0004
 
     def __init__(
@@ -54,7 +75,10 @@ class ComicStrip:
         self.desktop_width = desktop_width
         self.viewport_width = max(1, self.canvas.winfo_width())
         self.viewport_height = max(1, self.canvas.winfo_height())
-        self.strip_width = max(1, round(desktop_width * self.START_WIDTH_RATIO))
+        self.prevent_image_upscale = False
+        self.stop_at_fit_width = True
+        initial_width = max(1, round(desktop_width * self.START_WIDTH_RATIO))
+        self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
         self.positions: list[PagePosition] = []
         self.source_images = MemoryShelf(self.SOURCE_CACHE_BYTES, _decoded_bytes)
@@ -65,7 +89,12 @@ class ComicStrip:
         self._windowed_geometry = self.window.TKroot.geometry()
         self._windowed_maximized = self._is_maximized()
         self._resize_job: str | None = None
+        self._zoom_job: str | None = None
+        self._render_job: str | None = None
         self._preload_job: str | None = None
+        self._zoom_stash: deque[tuple[int, int]] = deque()
+        self._pending_render_indices: list[int] = []
+        self._pending_preload_indices: list[int] = []
         self._visible_range = (0, 0)
         self.canvas.configure(
             background=CANVAS_COLOR, borderwidth=0, highlightthickness=0
@@ -136,6 +165,7 @@ class ComicStrip:
         return handle
 
     def request_close(self) -> None:
+        self.stop_zooming()
         self.should_close = True
 
     def _is_maximized(self) -> bool:
@@ -145,6 +175,7 @@ class ComicStrip:
             return self.window.TKroot.state() == "zoomed"
 
     def toggle_fullscreen(self) -> None:
+        self.stop_zooming()
         root: tk.Tk = self.window.TKroot
         if not self.fullscreen:
             root.update_idletasks()
@@ -171,6 +202,7 @@ class ComicStrip:
         size = (max(1, int(event.width)), max(1, int(event.height)))
         if size == (self.viewport_width, self.viewport_height):
             return
+        self.stop_zooming()
         self.viewport_width, self.viewport_height = size
         if self._resize_job is not None:
             self.canvas.after_cancel(self._resize_job)
@@ -178,6 +210,10 @@ class ComicStrip:
 
     def _finish_resize(self) -> None:
         self._resize_job = None
+        maximum = self._maximum_strip_width()
+        if self.strip_width > maximum:
+            self._set_strip_width(maximum, self.viewport_height // 2)
+            return
         self._arrange_strip()
         self.paint()
         self._show_status()
@@ -195,7 +231,9 @@ class ComicStrip:
             steps = max(1, abs(delta) // 120)
 
         if int(getattr(event, "state", 0)) & self.CONTROL_MASK:
-            self.zoom(direction * steps, anchor_y=int(event.y))
+            # Keep zoom visually sequential even when a mouse reports several
+            # wheel notches in one event. Scrolling can still use acceleration.
+            self.zoom(direction, anchor_y=int(event.y))
         else:
             self.scroll(-direction * steps * self.WHEEL_STEP)
         return "break"
@@ -234,7 +272,9 @@ class ComicStrip:
                 reduction = min(original.width // width, original.height // height)
                 if reduction >= 2:
                     working = original.reduce(reduction)
-            rendered = working.resize((width, height), Image.Resampling.BILINEAR)
+            rendered = working.resize(
+                (width, height), _resize_filter(original.size, (width, height))
+            )
 
         photo = ImageTk.PhotoImage(rendered, master=self.canvas)
         self.ready_photos.store(cache_key, photo)
@@ -245,6 +285,7 @@ class ComicStrip:
 
     def scroll_to(self, position: int | float) -> None:
         """Move directly to a position selected on the scrollbar."""
+        self.stop_zooming()
         target = clamp_scroll(round(position), self.content_height, self.viewport_height)
         if target != self.scroll_y:
             self.scroll_y = target
@@ -269,44 +310,92 @@ class ComicStrip:
             return
         anchor = self.viewport_height // 2 if anchor_y is None else anchor_y
         anchor = min(max(anchor, 0), self.viewport_height)
+        direction = 1 if steps > 0 else -1
+
+        # A new direction supersedes queued work. Repeated commands in the same
+        # direction join the stash and are applied one at a time.
+        if self._zoom_stash and self._zoom_stash[-1][0] != direction:
+            self.stop_zooming()
+        else:
+            self._cancel_pending_work()
+        self._zoom_stash.extend((direction, anchor) for _ in range(abs(steps)))
+        if self._zoom_job is None:
+            self._zoom_job = self.canvas.after(
+                0, self._apply_next_zoom_step
+            )
+
+    def _apply_next_zoom_step(self) -> None:
+        self._zoom_job = None
+        if not self._zoom_stash:
+            return
+        direction, anchor = self._zoom_stash.popleft()
+        if not self._apply_zoom_step(direction, anchor):
+            self._zoom_stash.clear()
+            return
+        if self._zoom_stash:
+            self._zoom_job = self.canvas.after(
+                self.ZOOM_STEP_DELAY_MS, self._apply_next_zoom_step
+            )
+
+    def _apply_zoom_step(self, direction: int, anchor: int) -> bool:
+        maximum = self._maximum_strip_width()
+        minimum = min(
+            maximum,
+            max(1, round(self.desktop_width * self.MIN_WIDTH_RATIO)),
+        )
+        requested = round(self.strip_width * (self.ZOOM_FACTOR**direction))
+        new_width = min(max(requested, minimum), maximum)
+        return self._set_strip_width(new_width, anchor)
+
+    def _set_strip_width(self, new_width: int, anchor: int) -> bool:
+        if new_width == self.strip_width:
+            return False
         old_height = max(1, self.content_height)
         reading_position = (self.scroll_y + anchor) / old_height
-        minimum = max(1, round(self.desktop_width * self.MIN_WIDTH_RATIO))
-        maximum = max(minimum, round(self.desktop_width * self.MAX_WIDTH_RATIO))
-        requested = round(self.strip_width * (self.ZOOM_FACTOR**steps))
-        new_width = min(max(requested, minimum), maximum)
-        if new_width == self.strip_width:
-            return
-
         self.strip_width = new_width
-        self._clear_canvas()
         self._arrange_strip()
         anchored_scroll = round(reading_position * self.content_height - anchor)
         self.scroll_y = clamp_scroll(
             anchored_scroll, self.content_height, self.viewport_height
         )
-        self.paint()
+        self.paint(priority_y=anchor)
         self._show_status()
+        return True
 
     def fit_width(self) -> None:
-        if self.strip_width == self.viewport_width:
-            return
-        old_height = max(1, self.content_height)
-        reading_position = (self.scroll_y + self.viewport_height / 2) / old_height
-        self.strip_width = self.viewport_width
-        self._clear_canvas()
-        self._arrange_strip()
-        target = round(
-            reading_position * self.content_height - self.viewport_height / 2
-        )
-        self.scroll_y = clamp_scroll(target, self.content_height, self.viewport_height)
-        self.paint()
-        self._show_status()
+        self.stop_zooming()
+        target_width = self.viewport_width
+        if self.prevent_image_upscale:
+            target_width = min(target_width, self._native_width_limit())
+        self._set_strip_width(target_width, self.viewport_height // 2)
+
+    def _native_width_limit(self) -> int:
+        return min((page.native_width for page in self.pages), default=1)
+
+    def _maximum_strip_width(self) -> int:
+        maximum = max(1, round(self.desktop_width * self.MAX_WIDTH_RATIO))
+        if self.stop_at_fit_width:
+            maximum = min(maximum, self.viewport_width)
+        if self.prevent_image_upscale:
+            maximum = min(maximum, self._native_width_limit())
+        return max(1, maximum)
+
+    def set_zoom_limits(
+        self, *, prevent_image_upscale: bool, stop_at_fit_width: bool
+    ) -> None:
+        self.stop_zooming()
+        self.prevent_image_upscale = prevent_image_upscale
+        self.stop_at_fit_width = stop_at_fit_width
+        maximum = self._maximum_strip_width()
+        if self.strip_width > maximum:
+            self._set_strip_width(maximum, self.viewport_height // 2)
 
     def open_bookshelf(self, pages: list[ComicPage], folder: Path) -> None:
+        self.stop_zooming()
         self.pages = pages
         self.folder = folder
-        self.strip_width = max(1, round(self.viewport_width * self.START_WIDTH_RATIO))
+        initial_width = max(1, round(self.viewport_width * self.START_WIDTH_RATIO))
+        self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
         self.source_images.clear()
         self.ready_photos.clear()
@@ -315,15 +404,57 @@ class ComicStrip:
         self.paint()
         self._show_status()
 
+    def stop_zooming(self) -> None:
+        """Discard queued zoom steps and rendering left by the last step."""
+        if self._zoom_job is not None:
+            self.canvas.after_cancel(self._zoom_job)
+            self._zoom_job = None
+        self._zoom_stash.clear()
+        self._cancel_pending_work()
+
     def _clear_canvas(self) -> None:
+        self._cancel_pending_work()
         for item, _photo, _size in self.canvas_pages.values():
             self.canvas.delete(item)
         self.canvas_pages.clear()
 
-    def paint(self) -> None:
+    def _cancel_pending_work(self) -> None:
+        if self._render_job is not None:
+            self.canvas.after_cancel(self._render_job)
+            self._render_job = None
         if self._preload_job is not None:
             self.canvas.after_cancel(self._preload_job)
             self._preload_job = None
+        self._pending_render_indices.clear()
+        self._pending_preload_indices.clear()
+
+    def _render_page(self, index: int) -> None:
+        page = self.pages[index]
+        position = self.positions[index]
+        size = (position.width, position.height)
+        existing = self.canvas_pages.get(page.file)
+        if existing is not None and existing[2] == size:
+            self.canvas.coords(existing[0], position.x, position.y - self.scroll_y)
+            return
+
+        # Do the expensive resize before removing the old canvas image. During
+        # rapid zooming, that old image is a better placeholder than a blank gap.
+        photo = self._canvas_photo(page, *size)
+        if photo is None:
+            return
+        if existing is not None:
+            self.canvas.delete(existing[0])
+        item = self.canvas.create_image(
+            position.x,
+            position.y - self.scroll_y,
+            anchor="nw",
+            image=photo,
+            tags=("comic-page",),
+        )
+        self.canvas_pages[page.file] = (item, photo, size)
+
+    def paint(self, priority_y: int | None = None) -> None:
+        self._cancel_pending_work()
 
         first, last = visible_page_range(
             self.positions, self.scroll_y, self.viewport_height
@@ -334,35 +465,65 @@ class ComicStrip:
             position = self.positions[index]
             size = (position.width, position.height)
             existing = self.canvas_pages.get(page.file)
-            if existing is None or existing[2] != size:
-                if existing is not None:
-                    self.canvas.delete(existing[0])
-                photo = self._canvas_photo(page, *size)
-                if photo is None:
-                    continue
-                item = self.canvas.create_image(
-                    position.x,
-                    position.y - self.scroll_y,
-                    anchor="nw",
-                    image=photo,
-                    tags=("comic-page",),
-                )
-                self.canvas_pages[page.file] = (item, photo, size)
-            else:
+            if existing is not None and existing[2] == size:
                 self.canvas.coords(existing[0], position.x, position.y - self.scroll_y)
+            elif existing is not None:
+                placeholder_x = (self.viewport_width - existing[2][0]) // 2
+                self.canvas.coords(
+                    existing[0], placeholder_x, position.y - self.scroll_y
+                )
 
         for file in set(self.canvas_pages) - wanted_files:
             item, _photo, _size = self.canvas_pages.pop(file)
             self.canvas.delete(item)
+
+        viewport_anchor = self.viewport_height // 2 if priority_y is None else priority_y
+        content_anchor = self.scroll_y + min(max(viewport_anchor, 0), self.viewport_height)
+        needs_render = [
+            index
+            for index in range(first, last)
+            if (
+                self.pages[index].file not in self.canvas_pages
+                or self.canvas_pages[self.pages[index].file][2]
+                != (self.positions[index].width, self.positions[index].height)
+            )
+        ]
+        prioritized = pages_nearest_to(self.positions, needs_render, content_anchor)
+        for index in prioritized[: self.IMMEDIATE_RENDER_COUNT]:
+            self._render_page(index)
+
         self.canvas.tag_lower("comic-page")
         self._visible_range = (first, last)
-        self._preload_job = self.canvas.after(
-            self.PRELOAD_DELAY_MS, self._warm_neighbor_pages
-        )
+        self._pending_render_indices = prioritized[self.IMMEDIATE_RENDER_COUNT :]
+        if self._pending_render_indices:
+            self._render_job = self.canvas.after(
+                self.RENDER_STEP_DELAY_MS, self._render_next_page
+            )
+        else:
+            self._schedule_neighbor_preload()
         self._sync_scrollbar()
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the
         # reader feel immediate without forcing a full event-loop update.
         self.canvas.update_idletasks()
+
+    def _render_next_page(self) -> None:
+        self._render_job = None
+        if not self._pending_render_indices:
+            self._schedule_neighbor_preload()
+            return
+
+        index = self._pending_render_indices.pop(0)
+        first, last = self._visible_range
+        if first <= index < last:
+            self._render_page(index)
+            self.canvas.update_idletasks()
+
+        if self._pending_render_indices:
+            self._render_job = self.canvas.after(
+                self.RENDER_STEP_DELAY_MS, self._render_next_page
+            )
+        else:
+            self._schedule_neighbor_preload()
 
     def _sync_scrollbar(self) -> None:
         if self.content_height <= self.viewport_height:
@@ -375,14 +536,29 @@ class ComicStrip:
             (self.scroll_y + self.viewport_height) / self.content_height,
         )
 
-    def _warm_neighbor_pages(self) -> None:
-        self._preload_job = None
+    def _schedule_neighbor_preload(self) -> None:
         first, last = self._visible_range
-        for index in (first - 1, last):
-            if 0 <= index < len(self.pages):
-                page = self.pages[index]
-                position = self.positions[index]
-                self._canvas_photo(page, position.width, position.height)
+        nearby = neighboring_page_indices(
+            first, last, len(self.pages), self.PRELOAD_DISTANCE
+        )
+        self._pending_preload_indices = nearby
+        if nearby:
+            self._preload_job = self.canvas.after(
+                self.PRELOAD_DELAY_MS, self._warm_next_neighbor
+            )
+
+    def _warm_next_neighbor(self) -> None:
+        self._preload_job = None
+        if not self._pending_preload_indices:
+            return
+        index = self._pending_preload_indices.pop(0)
+        page = self.pages[index]
+        position = self.positions[index]
+        self._canvas_photo(page, position.width, position.height)
+        if self._pending_preload_indices:
+            self._preload_job = self.canvas.after(
+                self.PRELOAD_STEP_DELAY_MS, self._warm_next_neighbor
+            )
 
     def _show_status(self) -> None:
         zoom = round(100 * self.strip_width / max(1, self.viewport_width))
