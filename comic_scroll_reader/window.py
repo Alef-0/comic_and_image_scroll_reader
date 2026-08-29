@@ -9,6 +9,7 @@ import FreeSimpleGUI as sg
 
 FALLBACK_DESKTOP_SIZE = (1280, 720)
 CANVAS_COLOR = "#1c1c1c"
+UI_FONT = ("TkDefaultFont", 10, "bold")
 
 
 def desktop_size() -> tuple[int, int]:
@@ -56,6 +57,7 @@ def ask_for_bookshelf(
 
 def build_reader_window() -> sg.Window:
     sg.theme("DarkGrey13")
+    sg.set_options(font=UI_FONT)
     controls = [
         sg.Button("Open Folder", key="-OPEN-"),
         sg.Button("−", key="-ZOOM-OUT-", tooltip="Zoom out (Ctrl+-)"),
@@ -92,4 +94,3 @@ def maximize(window: sg.Window) -> None:
         window.TKroot.attributes("-zoomed", True)
     except tk.TclError:
         window.TKroot.state("zoomed")
-
