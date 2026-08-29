@@ -10,6 +10,7 @@ import FreeSimpleGUI as sg
 from PIL import Image, ImageTk
 
 from .bookshelf import open_page
+from .image_resizer import ImageResizer
 from .layout import (
     arrange_pages,
     clamp_scroll,
@@ -83,6 +84,7 @@ class ComicStrip:
         self.positions: list[PagePosition] = []
         self.source_images = MemoryShelf(self.SOURCE_CACHE_BYTES, _decoded_bytes)
         self.ready_photos = MemoryShelf(self.PHOTO_CACHE_BYTES, _photo_bytes)
+        self.image_resizer = ImageResizer()
         self.canvas_pages: dict[Path, CanvasPage] = {}
         self.should_close = False
         self.fullscreen = False
@@ -267,13 +269,10 @@ class ComicStrip:
             return None
         rendered = original
         if original.size != (width, height):
-            working = original
-            if width < original.width and height < original.height:
-                reduction = min(original.width // width, original.height // height)
-                if reduction >= 2:
-                    working = original.reduce(reduction)
-            rendered = working.resize(
-                (width, height), _resize_filter(original.size, (width, height))
+            rendered = self.image_resizer.resize(
+                original,
+                (width, height),
+                _resize_filter(original.size, (width, height)),
             )
 
         photo = ImageTk.PhotoImage(rendered, master=self.canvas)
@@ -563,5 +562,6 @@ class ComicStrip:
     def _show_status(self) -> None:
         zoom = round(100 * self.strip_width / max(1, self.viewport_width))
         self.window["-STATUS-"].update(
-            f"{self.folder.name}  •  {len(self.pages)} pages  •  {zoom}%"
+            f"{self.folder.name}  •  {len(self.pages)} pages  •  "
+            f"{zoom}%  •  {self.image_resizer.backend_name}"
         )
