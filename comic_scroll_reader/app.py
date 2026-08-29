@@ -13,6 +13,9 @@ from .window import (
     build_reader_window,
     desktop_size,
     maximize,
+    TOP_BAR_TOGGLE_KEY,
+    toggle_collapsible_group,
+    toggle_top_bar,
     windowed_size,
 )
 
@@ -112,6 +115,11 @@ def run_reader(
             event, values = window.read(timeout=50)
             if event == sg.WIN_CLOSED:
                 break
+            if toggle_collapsible_group(window, event):
+                continue
+            if event == TOP_BAR_TOGGLE_KEY:
+                toggle_top_bar(window)
+                continue
             if event in {"-LIMIT-NATIVE-", "-LIMIT-FIT-"}:
                 reader.set_zoom_limits(
                     prevent_image_upscale=bool(values["-LIMIT-NATIVE-"]),

@@ -11,6 +11,18 @@ FALLBACK_DESKTOP_SIZE = (1280, 720)
 WINDOWED_SIZE_RATIO = (0.75, 0.80)
 CANVAS_COLOR = "#1c1c1c"
 UI_FONT = ("TkDefaultFont", 10, "bold")
+GROUP_HEADER_FONT = ("TkDefaultFont", 9, "bold")
+TOP_BAR_TOGGLE_FONT = ("TkDefaultFont", 5, "bold")
+TOP_BAR_TOGGLE_HEIGHT = 1
+GROUP_TOGGLE_SUFFIX = "::toggle"
+TOP_BAR_KEY = "-TOP-BAR-"
+TOP_BAR_TOGGLE_KEY = "-TOGGLE-TOP-BAR-"
+COLLAPSIBLE_GROUPS = {
+    "-FILE-GROUP-": ("File", "-FILE-GROUP-CONTENT-"),
+    "-IMAGE-SIZE-GROUP-": ("Image size", "-IMAGE-SIZE-GROUP-CONTENT-"),
+    "-PAGE-LAYOUT-GROUP-": ("Page layout", "-PAGE-LAYOUT-GROUP-CONTENT-"),
+    "-WINDOW-GROUP-": ("Window", "-WINDOW-GROUP-CONTENT-"),
+}
 
 
 def desktop_size() -> tuple[int, int]:
@@ -65,6 +77,84 @@ def windowed_size(desktop_width: int, desktop_height: int) -> tuple[int, int]:
     )
 
 
+def _collapsible_group(title: str, content: list[list[sg.Element]], key: str) -> sg.Frame:
+    """Create a group whose compact title remains visible while collapsed."""
+    content_key = COLLAPSIBLE_GROUPS[key][1]
+    return sg.Frame(
+        "",
+        [
+            [
+                sg.pin(
+                    sg.Column(
+                        content,
+                        key=content_key,
+                        visible=False,
+                        pad=(0, 0),
+                        metadata={"expanded": False},
+                    )
+                )
+            ]
+        ],
+        key=key,
+        tooltip="Click the group title to expand or collapse",
+        metadata={"header_widget": None},
+    )
+
+
+def _install_clickable_group_headers(window: sg.Window) -> None:
+    """Use real Tk buttons as labelframe titles so every click is repeatable."""
+    for frame_key, (title, _content_key) in COLLAPSIBLE_GROUPS.items():
+        frame = window[frame_key]
+        labelframe: tk.LabelFrame = frame.Widget
+        background = labelframe.cget("background")
+        header = tk.Button(
+            labelframe,
+            text=f"{title} ▸",
+            command=lambda key=frame_key: window.write_event_value(
+                f"{key}{GROUP_TOGGLE_SUFFIX}", None
+            ),
+            background=background,
+            foreground=labelframe.cget("foreground"),
+            activebackground=background,
+            activeforeground=labelframe.cget("foreground"),
+            font=GROUP_HEADER_FONT,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
+            padx=2,
+            pady=0,
+            cursor="hand2",
+        )
+        labelframe.configure(labelwidget=header)
+        frame.metadata["header_widget"] = header
+
+
+def toggle_collapsible_group(window: sg.Window, event: object) -> bool:
+    """Toggle the group represented by a clickable-header event, if any."""
+    for frame_key, (title, content_key) in COLLAPSIBLE_GROUPS.items():
+        if event != f"{frame_key}{GROUP_TOGGLE_SUFFIX}":
+            continue
+        content = window[content_key]
+        expanded = not bool(content.metadata["expanded"])
+        content.metadata["expanded"] = expanded
+        content.update(visible=expanded)
+        header = window[frame_key].metadata["header_widget"]
+        header.configure(text=f"{title} {'▾' if expanded else '▸'}")
+        return True
+    return False
+
+
+def toggle_top_bar(window: sg.Window) -> None:
+    """Hide or restore the controls while leaving their full-width toggle visible."""
+    top_bar = window[TOP_BAR_KEY]
+    visible = not bool(top_bar.metadata["visible"])
+    top_bar.metadata["visible"] = visible
+    top_bar.update(visible=visible)
+    toggle = window[TOP_BAR_TOGGLE_KEY]
+    toggle.update(text="▲" if visible else "▼")
+    toggle.set_tooltip("Collapse top bar" if visible else "Expand top bar")
+
+
 def build_reader_window(
     size: tuple[int, int] | None = None,
     *,
@@ -74,8 +164,10 @@ def build_reader_window(
     sg.theme("DarkGrey13")
     sg.set_options(font=UI_FONT)
     controls = [
-        sg.Frame("File", [[sg.Button("Open Folder", key="-OPEN-")]]),
-        sg.Frame(
+        _collapsible_group(
+            "File", [[sg.Button("Open Folder", key="-OPEN-")]], "-FILE-GROUP-"
+        ),
+        _collapsible_group(
             "Image size",
             [
                 [
@@ -83,8 +175,6 @@ def build_reader_window(
                     sg.Button("+", key="-ZOOM-IN-", tooltip="Zoom in (Ctrl++)"),
                     sg.Button("Fit Width", key="-FIT-"),
                     sg.Button("Original Size", key="-ORIGINAL-SIZE-"),
-                ],
-                [
                     sg.Checkbox(
                         "Don't enlarge images",
                         default=False,
@@ -99,8 +189,9 @@ def build_reader_window(
                     ),
                 ],
             ],
+            "-IMAGE-SIZE-GROUP-",
         ),
-        sg.Frame(
+        _collapsible_group(
             "Page layout",
             [
                 [
@@ -119,15 +210,40 @@ def build_reader_window(
                     ),
                 ]
             ],
+            "-PAGE-LAYOUT-GROUP-",
         ),
-        sg.Frame(
+        _collapsible_group(
             "Window",
             [[sg.Button("Fullscreen", key="-FULLSCREEN-", tooltip="Toggle fullscreen (F11)")]],
+            "-WINDOW-GROUP-",
         ),
         sg.Text("", key="-STATUS-", expand_x=True, justification="right"),
     ]
     layout = [
-        controls,
+        [
+            sg.pin(
+                sg.Column(
+                    [controls],
+                    key=TOP_BAR_KEY,
+                    expand_x=True,
+                    pad=(0, 0),
+                    metadata={"visible": True},
+                ),
+                expand_x=True,
+            )
+        ],
+        [
+            sg.Button(
+                "▲",
+                key=TOP_BAR_TOGGLE_KEY,
+                tooltip="Collapse top bar",
+                expand_x=True,
+                border_width=0,
+                size=(None, TOP_BAR_TOGGLE_HEIGHT),
+                font=TOP_BAR_TOGGLE_FONT,
+                pad=(0, 0),
+            )
+        ],
         [
             sg.Canvas(
                 key="-CANVAS-",
@@ -138,7 +254,7 @@ def build_reader_window(
             )
         ],
     ]
-    return sg.Window(
+    window = sg.Window(
         "Comic and Image Scroll Reader",
         layout,
         margins=(0, 0),
@@ -147,6 +263,9 @@ def build_reader_window(
         finalize=True,
         use_default_focus=False,
     )
+    _install_clickable_group_headers(window)
+    window[TOP_BAR_TOGGLE_KEY].Widget.configure(pady=0, highlightthickness=0)
+    return window
 
 
 def maximize(window: sg.Window) -> None:
