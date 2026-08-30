@@ -25,8 +25,9 @@ python3 run_reader.py
 
 The launcher's basic settings are loaded from the per-user config file and can
 be edited and saved before opening a comic. Drag and drop requires the
-`tkinterdnd2` dependency from `requirements.txt`. Folder browsing uses Zenity
-on GTK desktops or KDialog on KDE.
+`tkinterdnd2` dependency from `requirements.txt`; when the project `.venv`
+contains it, `run_reader.py` automatically uses that environment. Folder
+browsing uses Zenity on GTK desktops or KDialog on KDE.
 
 Or open an image folder directly:
 
@@ -137,6 +138,11 @@ detected spread its own row in dual-page mode. Click and drag anywhere on the
 reader to pan vertically or horizontally when an image is wider than the
 window.
 
+The experimental **Remember folder** option controls per-folder reading
+positions. When disabled, no page is saved and the reader never asks whether
+to continue. Zoom is global: every folder and reader window uses the same last
+saved zoom level.
+
 All page resizing uses bicubic interpolation.
 Use **Save Configs** to persist the current checkbox settings. Toolbar
 visibility and the last window geometry/state are saved automatically when
@@ -144,9 +150,10 @@ they change or the reader closes. They are loaded from
 `~/.config/comic-scroll-reader/reader_config.json`; if `XDG_CONFIG_HOME` is
 set, its value replaces `~/.config`.
 
-On close, the active folder, last page, and zoom level are saved separately in
+On close, the active folder and last page are saved separately in
 `~/.config/comic-scroll-reader/reading_progress.csv`. Reopening that folder
-offers to restore the saved position. The CSV stores no other configuration.
+offers to restore the saved page. The CSV stores no other configuration; the
+shared zoom level remains in `reader_config.json`.
 
 ## Credits and license
 
