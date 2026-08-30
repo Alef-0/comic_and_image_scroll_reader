@@ -13,6 +13,7 @@ LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "csr_logo.png"
 DROP_ZONE_KEY = "-LAUNCHER-DROP-ZONE-"
 DROP_EVENT_KEY = "-LAUNCHER-FOLDER-DROPPED-"
 SAVE_KEY = "-LAUNCHER-SAVE-"
+LAUNCH_BLOCK_SIZE = (260, 260)
 CONFIG_KEYS = {
     "prevent_image_upscale": "-LAUNCHER-LIMIT-NATIVE-",
     "stop_at_fit_width": "-LAUNCHER-LIMIT-FIT-",
@@ -85,20 +86,28 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
     ]
     layout = [
         [
-            sg.Image(
-                filename=str(LOGO_PATH),
-                subsample=4,
-                pad=((12, 20), (12, 8)),
+            sg.Column(
+                [[sg.Image(filename=str(LOGO_PATH), subsample=5, pad=(0, 0))]],
+                size=LAUNCH_BLOCK_SIZE,
+                element_justification="center",
+                vertical_alignment="center",
+                pad=((12, 6), (12, 8)),
             ),
-            sg.Button(
-                "Drag and drop here\nto open\n\nClick to browse",
-                key=DROP_ZONE_KEY,
-                size=(30, 13),
-                font=("TkDefaultFont", 12, "bold"),
-                button_color=("#f3f7ff", "#263b69"),
-                border_width=3,
-                pad=((0, 12), (12, 8)),
-                tooltip="Drop a comic folder or click to choose one",
+            sg.Column(
+                [[sg.Button(
+                    "Drag and drop here\nto open\n\nClick to browse",
+                    key=DROP_ZONE_KEY,
+                    size=(26, 12),
+                    font=("TkDefaultFont", 12, "bold"),
+                    button_color=("#f3f7ff", "#263b69"),
+                    border_width=3,
+                    pad=(0, 0),
+                    tooltip="Drop a comic folder or click to choose one",
+                )]],
+                size=LAUNCH_BLOCK_SIZE,
+                element_justification="center",
+                vertical_alignment="center",
+                pad=((6, 12), (12, 8)),
             ),
         ],
         [
@@ -118,6 +127,22 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
                 ],
                 expand_x=True,
                 pad=(12, (4, 12)),
+            )
+        ],
+        [sg.Text("Developed by Alef-0", expand_x=True, justification="center")],
+        [
+            sg.Text(
+                "Vibecoded using OpenAI GPT-5.6 Codex — an agentic coding model",
+                expand_x=True,
+                justification="center",
+            )
+        ],
+        [
+            sg.Text(
+                "MIT License",
+                expand_x=True,
+                justification="center",
+                pad=((0, 0), (0, 10)),
             )
         ],
     ]

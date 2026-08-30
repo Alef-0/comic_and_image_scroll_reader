@@ -375,11 +375,19 @@ def build_reader_window(
             pad=((6, 6), (0, 0)),
         ),
     ]
+    control_rows = (
+        [
+            [*controls[:3], sg.Push(), *controls[5:]],
+            [controls[3], controls[4]],
+        ]
+        if expand_all
+        else [controls]
+    )
     layout = [
         [
             sg.pin(
                 sg.Column(
-                    [controls],
+                    control_rows,
                     key=TOP_BAR_KEY,
                     expand_x=True,
                     pad=(0, 0),
