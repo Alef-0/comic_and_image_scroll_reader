@@ -1,9 +1,12 @@
 import unittest
 from pathlib import Path
+import tkinter as tk
+from types import SimpleNamespace
 
 from comic_scroll_reader.ui.window import (
     TOP_BAR_KEY,
     TOP_BAR_TOGGLE_KEY,
+    is_maximized,
     reader_window_title,
     size_from_geometry,
     toggle_collapsible_group,
@@ -36,6 +39,14 @@ class FakeWindow(dict):
 
 
 class WindowControlTests(unittest.TestCase):
+    def test_destroyed_window_is_not_reported_as_maximized(self) -> None:
+        destroyed = SimpleNamespace(
+            attributes=lambda _name: (_ for _ in ()).throw(tk.TclError()),
+            state=lambda: (_ for _ in ()).throw(tk.TclError()),
+        )
+
+        self.assertFalse(is_maximized(SimpleNamespace(TKroot=destroyed)))
+
     def test_saved_geometry_restores_its_window_size(self) -> None:
         self.assertEqual(size_from_geometry("900x700+20-30"), (900, 700))
         self.assertIsNone(size_from_geometry("not geometry"))

@@ -6,7 +6,7 @@ import tkinter as tk
 import FreeSimpleGUI as sg
 
 from ..config import CONFIG_PATH, DEFAULT_CONFIG, load_config, save_config
-from .window import ask_for_bookshelf
+from .window import APP_ICON_PATH, ask_for_bookshelf, compact_buttons
 
 
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "csr_logo.png"
@@ -146,13 +146,16 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
             )
         ],
     ]
-    return sg.Window(
+    window = sg.Window(
         "Comic and Scroll Reader",
         layout,
+        icon=str(APP_ICON_PATH),
         finalize=True,
         resizable=False,
         use_default_focus=False,
     )
+    compact_buttons(window, {DROP_ZONE_KEY})
+    return window
 
 
 def run_launcher() -> Path | None:

@@ -68,6 +68,8 @@ nuitka_options=(
     --include-package=PIL
     --include-module=cv2
     --include-data-files="$project_directory/comic_scroll_reader/assets/csr_logo.png=comic_scroll_reader/assets/csr_logo.png"
+    --include-data-files="$project_directory/comic_scroll_reader/assets/csr_app_icon.png=comic_scroll_reader/assets/csr_app_icon.png"
+    --linux-icon="$project_directory/comic_scroll_reader/assets/csr_app_icon.png"
     --nofollow-import-to=numpy.random
     --nofollow-import-to=numpy.fft
     --output-filename=comic-scroll-reader

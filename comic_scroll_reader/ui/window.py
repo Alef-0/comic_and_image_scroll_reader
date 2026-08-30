@@ -15,8 +15,9 @@ WINDOWED_SIZE_RATIO = (0.75, 0.80)
 CANVAS_COLOR = "#1c1c1c"
 UI_FONT = ("TkDefaultFont", 11, "bold")
 GROUP_HEADER_FONT = ("TkDefaultFont", 10, "bold")
-PAGE_COUNTER_FONT = ("TkDefaultFont", 11, "bold underline")
-CLICKABLE_TEXT_FONT = ("TkDefaultFont", 11, "bold underline")
+STATUS_FONT = ("TkDefaultFont", 12, "bold")
+PAGE_COUNTER_FONT = ("TkDefaultFont", 12, "bold underline")
+CLICKABLE_TEXT_FONT = ("TkDefaultFont", 12, "bold underline")
 TOP_BAR_TOGGLE_FONT = ("TkDefaultFont", 5, "bold")
 TOP_BAR_TOGGLE_HEIGHT = 1
 GROUP_TOGGLE_SUFFIX = "::toggle"
@@ -32,7 +33,10 @@ COLLAPSIBLE_GROUPS = {
     "-PAGE-LAYOUT-GROUP-": ("Page layout", "-PAGE-LAYOUT-GROUP-CONTENT-"),
     "-EXPERIMENTAL-GROUP-": ("Experimental", "-EXPERIMENTAL-GROUP-CONTENT-"),
 }
-BUTTON_PAD = ((2, 2), (1, 1))
+BUTTON_PAD = (0, 0)
+APP_ICON_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "csr_app_icon.png"
+)
 
 
 def desktop_size() -> tuple[int, int]:
@@ -119,7 +123,21 @@ def is_maximized(window: sg.Window) -> bool:
     try:
         return bool(window.TKroot.attributes("-zoomed"))
     except tk.TclError:
-        return window.TKroot.state() == "zoomed"
+        try:
+            return window.TKroot.state() == "zoomed"
+        except tk.TclError:
+            return False
+
+
+def compact_buttons(
+    window: sg.Window, excluded_keys: set[str] | None = None
+) -> None:
+    """Reduce Tk's internal text-to-border padding on ordinary buttons."""
+    excluded = excluded_keys or set()
+    for key, element in window.AllKeysDict.items():
+        if key in excluded or not isinstance(element.Widget, tk.Button):
+            continue
+        element.Widget.configure(padx=1, pady=0)
 
 
 def reader_window_title(folder: Path) -> str:
@@ -248,9 +266,11 @@ def ask_for_page_number(current: int, total: int) -> str | None:
         layout,
         modal=True,
         keep_on_top=True,
+        icon=str(APP_ICON_PATH),
         finalize=True,
         element_justification="center",
     )
+    compact_buttons(dialog)
     try:
         event, values = dialog.read()
         if event != "-CONFIRM-PAGE-JUMP-":
@@ -267,6 +287,7 @@ def build_reader_window(
     manga_reading: bool = False,
     page_spacing: bool = True,
     detect_double_spreads: bool = True,
+    remember_folder: bool = True,
     prevent_image_upscale: bool = False,
     stop_at_fit_width: bool = True,
     top_bar_visible: bool = True,
@@ -342,13 +363,26 @@ def build_reader_window(
                         tooltip=(
                             "Detect unusually wide images and keep them in solo rows"
                         ),
-                    )
+                    ),
+                    sg.Checkbox(
+                        "Remember folder",
+                        default=remember_folder,
+                        key="-REMEMBER-FOLDER-",
+                        enable_events=True,
+                        tooltip="Offer to continue from the last page",
+                    ),
                 ]
             ],
             "-EXPERIMENTAL-GROUP-",
             expanded=expand_all,
         ),
-        sg.Text("", key="-STATUS-", expand_x=True, justification="right"),
+        sg.Text(
+            "",
+            key="-STATUS-",
+            font=STATUS_FONT,
+            expand_x=True,
+            justification="right",
+        ),
         sg.Text(
             "−",
             key=ZOOM_OUT_KEY,
@@ -357,7 +391,12 @@ def build_reader_window(
             enable_events=True,
             pad=((5, 2), (0, 0)),
         ),
-        sg.Text("75%", key=ZOOM_STATUS_KEY, pad=((2, 2), (0, 0))),
+        sg.Text(
+            "75%",
+            key=ZOOM_STATUS_KEY,
+            font=STATUS_FONT,
+            pad=((2, 2), (0, 0)),
+        ),
         sg.Text(
             "+",
             key=ZOOM_IN_KEY,
@@ -425,12 +464,14 @@ def build_reader_window(
         margins=(0, 0),
         resizable=True,
         size=size,
+        icon=str(APP_ICON_PATH),
         finalize=True,
         use_default_focus=False,
     )
     _install_clickable_group_headers(window)
     for key in (PAGE_COUNTER_KEY, ZOOM_OUT_KEY, ZOOM_IN_KEY):
         window[key].Widget.configure(cursor="hand2")
+    compact_buttons(window)
     window[TOP_BAR_TOGGLE_KEY].Widget.configure(pady=0, highlightthickness=0)
     return window
 
