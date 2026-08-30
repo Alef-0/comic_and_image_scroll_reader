@@ -44,7 +44,7 @@ def open_page(file: Path) -> Image.Image | None:
 
 
 def scan_bookshelf(folder: Path) -> list[ComicPage]:
-    """Return readable image pages in natural filename order."""
+    """Return image pages with readable metadata in natural filename order."""
     candidates = sorted(
         (
             file
@@ -59,7 +59,6 @@ def scan_bookshelf(folder: Path) -> list[ComicPage]:
         try:
             with Image.open(file) as image:
                 width, height = display_size(image)
-                image.load()
         except (OSError, ValueError, UnidentifiedImageError):
             print(f"Warning: unable to read {file.name}; skipping it.", file=sys.stderr)
             continue

@@ -96,6 +96,55 @@ class ReaderViewTests(unittest.TestCase):
 
         self.assertEqual(distances, [-700, 700, -250, 250])
 
+    def test_numlock_off_numpad_navigation_uses_keypad_symbols(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_height = 300
+        reader.positions = [PagePosition(0, 0, 100, 1_000)]
+        distances: list[int] = []
+        reader.scroll = distances.append
+        reader.zoom = lambda _steps: None
+        reader.toggle_fullscreen = lambda: None
+        reader.request_close = lambda: None
+
+        shortcuts = reader._shortcut_actions()
+        shortcuts["<KP_Home>"]()
+        shortcuts["<KP_End>"]()
+        shortcuts["<KP_Prior>"]()
+        shortcuts["<KP_Next>"]()
+
+        self.assertEqual(distances, [-700, 700, -250, 250])
+        self.assertNotIn("<KP_7>", shortcuts)
+        self.assertNotIn("<KP_1>", shortcuts)
+        self.assertNotIn("<KP_9>", shortcuts)
+        self.assertNotIn("<KP_3>", shortcuts)
+
+    def test_numlock_off_numpad_arrows_scroll_and_pan(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 700
+        reader.viewport_height = 300
+        reader.positions = [PagePosition(-250, 0, 1_200, 1_000)]
+        reader.pan_x = 0
+        distances: list[int] = []
+        reader.scroll = distances.append
+        reader.zoom = lambda _steps: None
+        reader.toggle_fullscreen = lambda: None
+        reader.request_close = lambda: None
+        reader.stop_zooming = lambda: None
+        reader.paint = lambda: None
+
+        shortcuts = reader._shortcut_actions()
+        shortcuts["<KP_Up>"]()
+        shortcuts["<KP_Down>"]()
+        shortcuts["<KP_Left>"]()
+        shortcuts["<KP_Right>"]()
+
+        self.assertEqual(distances, [-120, 120])
+        self.assertEqual(reader.pan_x, 0)
+        self.assertNotIn("<KP_8>", shortcuts)
+        self.assertNotIn("<KP_4>", shortcuts)
+        self.assertNotIn("<KP_6>", shortcuts)
+        self.assertNotIn("<KP_2>", shortcuts)
+
     def test_selects_bicubic_for_reduction_and_enlargement(self) -> None:
         self.assertEqual(
             _resize_filter((100, 200), (200, 400)), Image.Resampling.BICUBIC
@@ -104,21 +153,42 @@ class ReaderViewTests(unittest.TestCase):
             _resize_filter((100, 200), (50, 100)), Image.Resampling.BICUBIC
         )
 
-    def test_zoom_limits_combine_fit_width_and_native_page_width(self) -> None:
+    def test_native_width_limit_is_applied_to_each_page_independently(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.desktop_width = 1_000
         reader.viewport_width = 700
         reader.stop_at_fit_width = True
-        reader.prevent_image_upscale = False
+        reader.prevent_image_upscale = True
         reader.dual_page = False
+        reader.double_spread_indices = set()
+        reader.typical_page_ratio = 0.75
+        reader.strip_width = 700
         reader.pages = [
             ComicPage(Path("wide.png"), 900, 1_200),
             ComicPage(Path("narrow.png"), 600, 1_200),
         ]
 
         self.assertEqual(reader._maximum_strip_width(), 700)
+        self.assertEqual(reader._scaled_page_widths(), [700, 600])
+
+    def test_one_narrow_page_does_not_limit_the_rest_of_the_folder(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.desktop_width = 1_920
+        reader.viewport_width = 1_000
+        reader.stop_at_fit_width = True
         reader.prevent_image_upscale = True
-        self.assertEqual(reader._maximum_strip_width(), 600)
+        reader.dual_page = False
+        reader.double_spread_indices = set()
+        reader.typical_page_ratio = 0.75
+        reader.strip_width = 1_000
+        reader.pages = [
+            ComicPage(Path("page-1.webp"), 1_280, 1_837),
+            ComicPage(Path("small.webp"), 400, 579),
+            ComicPage(Path("page-3.webp"), 1_280, 1_837),
+        ]
+
+        self.assertEqual(reader._maximum_strip_width(), 1_000)
+        self.assertEqual(reader._scaled_page_widths(), [1_000, 400, 1_000])
 
     def test_dual_page_fit_width_allows_half_the_viewport_per_page(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)

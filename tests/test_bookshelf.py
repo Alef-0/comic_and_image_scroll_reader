@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -31,6 +32,27 @@ class BookshelfTests(unittest.TestCase):
             [(page.native_width, page.native_height) for page in pages],
             [(10, 20), (30, 40)],
         )
+
+    def test_scan_reads_dimensions_without_decoding_pixels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "page.png"
+            file.touch()
+            image = MagicMock()
+            image.__enter__.return_value = image
+            image.size = (800, 1_200)
+            image.getexif.return_value = {}
+            image.load.side_effect = AssertionError("pixel data should stay lazy")
+
+            with patch(
+                "comic_scroll_reader.files.bookshelf.Image.open", return_value=image
+            ):
+                pages = scan_bookshelf(file.parent)
+
+        self.assertEqual(
+            [(page.native_width, page.native_height) for page in pages],
+            [(800, 1_200)],
+        )
+        image.load.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -127,6 +127,7 @@ class ComicStrip:
             self.canvas,
             orient=tk.VERTICAL,
             command=self._scrollbar_moved,
+            cursor="arrow",
         )
         self.scrollbar.place(relx=1.0, rely=0, relheight=1.0, anchor="ne")
         self._connect_controls()
@@ -184,20 +185,36 @@ class ComicStrip:
     def _shortcut_actions(self) -> dict[str, Callable[[], None]]:
         """Return keyboard bindings as actions that can be verified independently."""
         one_screen = lambda: max(1, self.viewport_height - 50)
+        page_down = lambda: self.scroll(one_screen())
+        page_up = lambda: self.scroll(-one_screen())
+        go_home = lambda: self.scroll(-self.maximum_scroll)
+        go_end = lambda: self.scroll(self.maximum_scroll)
+        pan_left = lambda: self.pan_horizontally(self.WHEEL_STEP)
+        pan_right = lambda: self.pan_horizontally(-self.WHEEL_STEP)
         return {
             "<Down>": lambda: self.scroll(self.WHEEL_STEP),
+            "<KP_Down>": lambda: self.scroll(self.WHEEL_STEP),
             "<j>": lambda: self.scroll(self.WHEEL_STEP),
             "<s>": lambda: self.scroll(self.WHEEL_STEP),
             "<Up>": lambda: self.scroll(-self.WHEEL_STEP),
+            "<KP_Up>": lambda: self.scroll(-self.WHEEL_STEP),
             "<k>": lambda: self.scroll(-self.WHEEL_STEP),
             "<w>": lambda: self.scroll(-self.WHEEL_STEP),
-            "<Next>": lambda: self.scroll(one_screen()),
-            "<space>": lambda: self.scroll(one_screen()),
-            "<Prior>": lambda: self.scroll(-one_screen()),
-            "<Home>": lambda: self.scroll(-self.maximum_scroll),
-            "<g>": lambda: self.scroll(-self.maximum_scroll),
-            "<End>": lambda: self.scroll(self.maximum_scroll),
-            "<G>": lambda: self.scroll(self.maximum_scroll),
+            "<Left>": pan_left,
+            "<KP_Left>": pan_left,
+            "<Right>": pan_right,
+            "<KP_Right>": pan_right,
+            "<Next>": page_down,
+            "<KP_Next>": page_down,
+            "<space>": page_down,
+            "<Prior>": page_up,
+            "<KP_Prior>": page_up,
+            "<Home>": go_home,
+            "<KP_Home>": go_home,
+            "<g>": go_home,
+            "<End>": go_end,
+            "<KP_End>": go_end,
+            "<G>": go_end,
             "<Control-plus>": lambda: self.zoom(1),
             "<Control-equal>": lambda: self.zoom(1),
             "<Control-minus>": lambda: self.zoom(-1),
@@ -338,7 +355,12 @@ class ComicStrip:
         self.typical_page_ratio = median(regular_ratios or all_ratios or [1.0])
 
     def _scaled_page_widths(self) -> list[int]:
-        widths = [self.strip_width] * len(self.pages)
+        widths = [
+            min(self.strip_width, page.native_width)
+            if self.prevent_image_upscale
+            else self.strip_width
+            for page in self.pages
+        ]
         target_height = self.strip_width / max(self.typical_page_ratio, 0.01)
         for index in self.double_spread_indices:
             page = self.pages[index]
@@ -420,6 +442,14 @@ class ComicStrip:
 
     def scroll(self, pixels: int) -> None:
         self.scroll_to(self.scroll_y + pixels)
+
+    def pan_horizontally(self, pixels: int) -> None:
+        """Move across a page that is wider than the viewport."""
+        self.stop_zooming()
+        target = self._clamped_pan_x(self.pan_x + pixels)
+        if target != self.pan_x:
+            self.pan_x = target
+            self.paint()
 
     def scroll_to(self, position: int | float) -> None:
         """Move directly to a position selected on the scrollbar."""
@@ -522,7 +552,7 @@ class ComicStrip:
         self.stop_zooming()
         target_width = self._fitted_page_width(2 if self.dual_page else 1)
         if self.prevent_image_upscale:
-            target_width = min(target_width, self._native_width_limit())
+            target_width = min(target_width, self._widest_native_width())
         self._set_strip_width(target_width, self.viewport_height // 2)
 
     def show_original_size(self) -> None:
@@ -557,8 +587,8 @@ class ComicStrip:
         )
         return max(1, (self.viewport_width - gap) // columns)
 
-    def _native_width_limit(self) -> int:
-        return min((page.native_width for page in self.pages), default=1)
+    def _widest_native_width(self) -> int:
+        return max((page.native_width for page in self.pages), default=1)
 
     def _maximum_strip_width(self) -> int:
         maximum = max(1, round(self.desktop_width * self.MAX_WIDTH_RATIO))
@@ -566,7 +596,7 @@ class ComicStrip:
             columns = 2 if self.dual_page else 1
             maximum = min(maximum, self._fitted_page_width(columns))
         if self.prevent_image_upscale:
-            maximum = min(maximum, self._native_width_limit())
+            maximum = min(maximum, self._widest_native_width())
         return max(1, maximum)
 
     def set_zoom_limits(
