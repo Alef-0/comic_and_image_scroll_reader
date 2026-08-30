@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">CSR</title>
+  <defs>
+    <linearGradient id="blue-chrome" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ff6ff"/>
+      <stop offset="0.28" stop-color="#18cfff"/>
+      <stop offset="0.52" stop-color="#f3fdff"/>
+      <stop offset="0.66" stop-color="#268dff"/>
+      <stop offset="1" stop-color="#123fc4"/>
+    </linearGradient>
+  </defs>
+  <text
+    x="256"
+    y="326"
+    text-anchor="middle"
+    fill="url(#blue-chrome)"
+    stroke="#08236f"
+    stroke-width="8"
+    paint-order="stroke fill"
+    font-family="DejaVu Sans, sans-serif"
+    font-size="192"
+    font-style="italic"
+    font-weight="900"
+    letter-spacing="-12"
+  >CSR</text>
+</svg>

@@ -14,6 +14,7 @@ dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.10",
     "Pillow>=10.0",
+    "tkinterdnd2>=0.4.3",
 ]
 
 [project.scripts]
@@ -21,3 +22,6 @@ comic-scroll-reader = "comic_scroll_reader.app:main"
 
 [tool.setuptools.packages.find]
 include = ["comic_scroll_reader*"]
+
+[tool.setuptools.package-data]
+comic_scroll_reader = ["assets/*.desktop", "assets/*.png", "assets/*.svg"]

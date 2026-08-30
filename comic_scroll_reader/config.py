@@ -1,10 +1,14 @@
-"""Persistent reader preferences stored beside the source entry point."""
+"""Persistent reader preferences stored in the user's config directory."""
 
 import json
+import os
 from pathlib import Path
 
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "reader_config.json"
+CONFIG_DIRECTORY = Path(
+    os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
+) / "comic-scroll-reader"
+CONFIG_PATH = CONFIG_DIRECTORY / "reader_config.json"
 DEFAULT_CONFIG = {
     "prevent_image_upscale": False,
     "stop_at_fit_width": True,
@@ -12,6 +16,7 @@ DEFAULT_CONFIG = {
     "manga_reading": False,
     "page_spacing": True,
     "detect_double_spreads": True,
+    "top_bar_visible": True,
 }
 
 
@@ -39,4 +44,5 @@ def save_config(config: dict[str, bool], path: Path = CONFIG_PATH) -> None:
         else default
         for key, default in DEFAULT_CONFIG.items()
     }
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")

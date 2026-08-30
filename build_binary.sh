@@ -52,7 +52,7 @@ if [[ -n "$minimal_opencv" ]]; then
     minimal_opencv="$(realpath -- "$minimal_opencv")"
 fi
 
-if ! "$python_command" -c 'import nuitka, numpy, PIL, FreeSimpleGUI' >/dev/null; then
+if ! "$python_command" -c 'import nuitka, numpy, PIL, FreeSimpleGUI, tkinterdnd2' >/dev/null; then
     echo "The selected Python environment needs Nuitka and the reader dependencies." >&2
     echo "Follow the build steps in README.md, then run this script again." >&2
     exit 1
@@ -67,6 +67,7 @@ nuitka_options=(
     --include-package=FreeSimpleGUI
     --include-package=PIL
     --include-module=cv2
+    --include-data-files="$project_directory/comic_scroll_reader/assets/csr_logo.png=comic_scroll_reader/assets/csr_logo.png"
     --nofollow-import-to=numpy.random
     --nofollow-import-to=numpy.fft
     --output-filename=comic-scroll-reader

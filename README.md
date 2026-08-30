@@ -14,11 +14,17 @@ if OpenCV cannot resize an image.
 
 ## Run
 
-Open the folder picker:
+Open the launcher, where a folder can be dropped or chosen with the desktop's
+native folder dialog:
 
 ```bash
 python3 run_reader.py
 ```
+
+The launcher's basic settings are loaded from the per-user config file and can
+be edited and saved before opening a comic. Drag and drop requires the
+`tkinterdnd2` dependency from `requirements.txt`. Folder browsing uses Zenity
+on GTK desktops or KDialog on KDE.
 
 Or open an image folder directly:
 
@@ -116,6 +122,29 @@ window.
 
 All page resizing uses bicubic interpolation.
 Use **Options → Save Configs** to persist the current checkbox settings. They
-are loaded automatically from `reader_config.json` beside `run_reader.py`, so
-the configuration location does not depend on the directory used to launch
-the reader.
+are loaded automatically from
+`~/.config/comic-scroll-reader/reader_config.json`. If `XDG_CONFIG_HOME` is
+set, its value is used instead of `~/.config`.
+
+## Build a Debian package
+
+First build the onefile program and place the resulting `comic-scroll-reader`
+binary in an artifact folder. The folder may also contain Nuitka's
+`run_reader.onefile-build` directory; it is compiler output and is not added to
+the package.
+
+Create the version 0.1 package with:
+
+```bash
+chmod +x build_deb.sh
+./build_deb.sh /path/to/artifact-folder
+```
+
+The package is written to `dist/` and can be installed with:
+
+```bash
+sudo apt install ./dist/comic-scroll-reader_0.1_amd64.deb
+```
+
+Set `DEB_MAINTAINER` before running the builder to replace the default local
+maintainer entry in the package metadata.

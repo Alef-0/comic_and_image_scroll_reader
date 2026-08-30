@@ -18,7 +18,7 @@ class ConfigTests(unittest.TestCase):
     def test_config_round_trip_keeps_every_reader_setting(self) -> None:
         expected = {key: not value for key, value in DEFAULT_CONFIG.items()}
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "reader_config.json"
+            path = Path(folder) / "nested" / "reader_config.json"
             save_config(expected, path)
 
             self.assertEqual(load_config(path), expected)

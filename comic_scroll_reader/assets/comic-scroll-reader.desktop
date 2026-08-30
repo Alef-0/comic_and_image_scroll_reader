@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Comic and Scroll Reader
+Comment=Read image folders as a continuous scrolling comic
+Exec=comic-scroll-reader %f
+Icon=comic-scroll-reader
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=inode/directory;
+StartupNotify=true
