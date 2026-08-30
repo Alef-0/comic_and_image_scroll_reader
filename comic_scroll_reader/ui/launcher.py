@@ -88,6 +88,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
     ]
     layout = [
         [
+            sg.Push(),
             sg.Column(
                 [[sg.Image(filename=str(LOGO_PATH), subsample=5, pad=(0, 0))]],
                 size=LAUNCH_BLOCK_SIZE,
@@ -111,6 +112,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
                 vertical_alignment="center",
                 pad=((6, 12), (12, 8)),
             ),
+            sg.Push(),
         ],
         [
             sg.Frame(
@@ -154,6 +156,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
         icon=str(APP_ICON_PATH),
         finalize=True,
         resizable=False,
+        element_justification="center",
         use_default_focus=False,
     )
     compact_buttons(window, {DROP_ZONE_KEY})
