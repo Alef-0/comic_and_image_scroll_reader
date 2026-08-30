@@ -8,6 +8,7 @@ import FreeSimpleGUI as sg
 
 from .config import CONFIG_PATH, load_config, save_config
 from .files.bookshelf import scan_bookshelf
+from .ui.launcher import run_launcher
 from .ui.reader_view import ComicStrip
 from .ui.window import (
     ask_for_page_number,
@@ -17,6 +18,8 @@ from .ui.window import (
     maximize,
     PAGE_COUNTER_KEY,
     TOP_BAR_TOGGLE_KEY,
+    TOP_BAR_KEY,
+    reader_window_title,
     toggle_collapsible_group,
     toggle_top_bar,
     windowed_size,
@@ -58,7 +61,11 @@ def read_arguments(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _open_another_folder(reader: ComicStrip) -> None:
     reader.stop_zooming()
-    selected = ask_for_bookshelf(reader.folder, reader.window.TKroot)
+    try:
+        selected = ask_for_bookshelf(reader.folder, reader.window.TKroot)
+    except RuntimeError as error:
+        sg.popup_error(f"Unable to open the system folder chooser:\n{error}")
+        return
     if selected is None:
         return
     pages = scan_bookshelf(selected) if selected.is_dir() else []
@@ -76,6 +83,7 @@ def _save_current_config(reader: ComicStrip) -> None:
         "manga_reading": reader.manga_reading,
         "page_spacing": reader.page_spacing,
         "detect_double_spreads": reader.detect_double_spreads,
+        "top_bar_visible": bool(reader.window[TOP_BAR_KEY].metadata["visible"]),
     }
     try:
         save_config(config)
@@ -83,6 +91,18 @@ def _save_current_config(reader: ComicStrip) -> None:
         sg.popup_error(f"Unable to save configurations:\n{error}")
         return
     sg.popup_ok(f"Configurations saved to:\n{CONFIG_PATH}", title="Save Configs")
+
+
+def _save_top_bar_visibility(reader: ComicStrip) -> None:
+    """Persist only the top-bar state without saving other unsaved controls."""
+    config = load_config()
+    config["top_bar_visible"] = bool(
+        reader.window[TOP_BAR_KEY].metadata["visible"]
+    )
+    try:
+        save_config(config)
+    except OSError as error:
+        sg.popup_error(f"Unable to save the top-bar state:\n{error}")
 
 
 def run_reader(
@@ -112,6 +132,8 @@ def run_reader(
         detect_double_spreads=config["detect_double_spreads"],
         prevent_image_upscale=config["prevent_image_upscale"],
         stop_at_fit_width=config["stop_at_fit_width"],
+        top_bar_visible=config["top_bar_visible"],
+        title=reader_window_title(folder),
     )
     try:
         # Establish and paint a useful normal-window geometry first. Besides
@@ -151,6 +173,7 @@ def run_reader(
                 continue
             if event == TOP_BAR_TOGGLE_KEY:
                 toggle_top_bar(window)
+                _save_top_bar_visibility(reader)
                 continue
             if event == PAGE_COUNTER_KEY:
                 page_number = ask_for_page_number(
@@ -189,7 +212,7 @@ def run_reader(
 
 def main(argv: list[str] | None = None) -> int:
     arguments = read_arguments(argv)
-    folder = arguments.folder.expanduser() if arguments.folder else ask_for_bookshelf()
+    folder = arguments.folder.expanduser() if arguments.folder else run_launcher()
     return (
         0
         if folder is None

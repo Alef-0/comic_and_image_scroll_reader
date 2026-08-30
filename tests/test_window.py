@@ -1,8 +1,10 @@
 import unittest
+from pathlib import Path
 
 from comic_scroll_reader.ui.window import (
     TOP_BAR_KEY,
     TOP_BAR_TOGGLE_KEY,
+    reader_window_title,
     toggle_collapsible_group,
     toggle_top_bar,
 )
@@ -33,6 +35,12 @@ class FakeWindow(dict):
 
 
 class WindowControlTests(unittest.TestCase):
+    def test_reader_title_identifies_the_active_folder(self) -> None:
+        self.assertEqual(
+            reader_window_title(Path("/comics/Chapter 12")),
+            "Comic and Scroll Reader — Chapter 12",
+        )
+
     def test_group_starts_collapsed_and_toggles_open_and_closed(self) -> None:
         content = FakeElement({"expanded": False})
         header = FakeHeader()

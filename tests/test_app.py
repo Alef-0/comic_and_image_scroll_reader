@@ -1,7 +1,9 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from comic_scroll_reader.app import read_arguments
+from comic_scroll_reader.app import _save_top_bar_visibility, read_arguments
 
 
 class ApplicationArgumentsTests(unittest.TestCase):
@@ -31,6 +33,23 @@ class ApplicationArgumentsTests(unittest.TestCase):
 
         self.assertTrue(arguments.dual_page)
         self.assertTrue(arguments.manga_reading)
+
+    @patch("comic_scroll_reader.app.save_config")
+    @patch("comic_scroll_reader.app.load_config")
+    def test_top_bar_visibility_is_saved_without_changing_other_settings(
+        self, load_config_mock, save_config_mock
+    ) -> None:
+        existing = {"dual_page": True, "top_bar_visible": True}
+        load_config_mock.return_value = existing.copy()
+        reader = SimpleNamespace(
+            window={"-TOP-BAR-": SimpleNamespace(metadata={"visible": False})}
+        )
+
+        _save_top_bar_visibility(reader)
+
+        save_config_mock.assert_called_once_with(
+            {"dual_page": True, "top_bar_visible": False}
+        )
 
 
 if __name__ == "__main__":

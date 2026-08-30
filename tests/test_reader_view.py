@@ -24,6 +24,22 @@ class FakeCanvas:
 
 
 class ReaderViewTests(unittest.TestCase):
+    def test_status_omits_detected_spread_count(self) -> None:
+        updates: list[str] = []
+        status = SimpleNamespace(update=updates.append)
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.original_size = False
+        reader.strip_width = 500
+        reader.viewport_width = 1_000
+        reader.folder = Path("/pictures/Chapter 1")
+        reader.detect_double_spreads = True
+        reader.double_spread_indices = {2, 5}
+        reader.window = {"-STATUS-": status}
+
+        reader._show_status()
+
+        self.assertEqual(updates, ["Chapter 1  •  50%"])
+
     def test_counter_uses_the_last_visible_page(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.pages = [object(), object(), object()]

@@ -22,7 +22,7 @@ from ..core.memory import MemoryShelf
 from ..core.models import ComicPage, PagePosition
 from ..files.bookshelf import open_page
 from ..imaging.image_resizer import ImageResizer
-from .window import CANVAS_COLOR, PAGE_COUNTER_KEY
+from .window import CANVAS_COLOR, PAGE_COUNTER_KEY, reader_window_title
 
 
 PhotoKey = tuple[Path, int, int]
@@ -679,6 +679,7 @@ class ComicStrip:
         self.stop_zooming()
         self.pages = pages
         self.folder = folder
+        self.window.set_title(reader_window_title(folder))
         self._refresh_spread_analysis()
         self.original_size = False
         initial_width = max(1, round(self.viewport_width * self.START_WIDTH_RATIO))
@@ -864,13 +865,7 @@ class ComicStrip:
             zoom = "Original"
         else:
             zoom = f"{round(100 * self.strip_width / max(1, self.viewport_width))}%"
-        spread_status = ""
-        if self.detect_double_spreads:
-            count = len(self.double_spread_indices)
-            spread_status = f"  •  {count} {'spread' if count == 1 else 'spreads'}"
-        self.window["-STATUS-"].update(
-            f"{self.folder.name}  •  {zoom}{spread_status}"
-        )
+        self.window["-STATUS-"].update(f"{self.folder.name}  •  {zoom}")
 
     def _show_page_counter(self) -> None:
         self.window[PAGE_COUNTER_KEY].update(value=self.page_counter_text)

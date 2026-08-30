@@ -1,8 +1,10 @@
-"""Window construction and native folder-dialog helpers."""
+"""Window construction and desktop-native folder-dialog helpers."""
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tkinter as tk
-from tkinter import filedialog
 
 import FreeSimpleGUI as sg
 
@@ -10,8 +12,9 @@ import FreeSimpleGUI as sg
 FALLBACK_DESKTOP_SIZE = (1280, 720)
 WINDOWED_SIZE_RATIO = (0.75, 0.80)
 CANVAS_COLOR = "#1c1c1c"
-UI_FONT = ("TkDefaultFont", 10, "bold")
-GROUP_HEADER_FONT = ("TkDefaultFont", 9, "bold")
+UI_FONT = ("TkDefaultFont", 11, "bold")
+GROUP_HEADER_FONT = ("TkDefaultFont", 10, "bold")
+PAGE_COUNTER_FONT = ("TkDefaultFont", 11, "bold underline")
 TOP_BAR_TOGGLE_FONT = ("TkDefaultFont", 5, "bold")
 TOP_BAR_TOGGLE_HEIGHT = 1
 GROUP_TOGGLE_SUFFIX = "::toggle"
@@ -48,27 +51,43 @@ def desktop_size() -> tuple[int, int]:
 def ask_for_bookshelf(
     starting_at: Path | None = None, parent: tk.Misc | None = None
 ) -> Path | None:
-    """Ask for a page folder without displaying dot-prefixed directories."""
-    owns_root = parent is None
-    dialog_root = tk.Tk() if owns_root else parent
-    if owns_root:
-        dialog_root.withdraw()
-    try:
-        # Linux loads this dialog lazily. Loading it first stops Tk from
-        # resetting the hidden-folder preference a moment later.
-        dialog_root.tk.call("auto_load", "::tk::dialog::file::Update")
-        dialog_root.tk.setvar("::tk::dialog::file::showHiddenVar", False)
-        dialog_root.tk.setvar("::tk::dialog::file::showHiddenBtn", True)
-        selected = filedialog.askdirectory(
-            parent=dialog_root,
-            title="Choose a folder containing comic pages",
-            initialdir=str(starting_at) if starting_at else None,
-            mustexist=True,
-        )
-    finally:
-        if owns_root:
-            dialog_root.destroy()
-    return Path(selected).expanduser() if selected else None
+    """Ask for a page folder through the current desktop's dialog helper."""
+    del parent  # Native dialog helpers do not use Tk parent windows.
+    start = (starting_at or Path.home()).expanduser().resolve()
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").casefold()
+    helpers = ["kdialog", "zenity"] if "kde" in desktop else ["zenity", "kdialog"]
+
+    for helper in helpers:
+        if shutil.which(helper) is None:
+            continue
+        if helper == "kdialog":
+            command = [
+                helper,
+                "--getexistingdirectory",
+                str(start),
+                "--title",
+                "Choose a folder containing comic pages",
+            ]
+        else:
+            command = [
+                helper,
+                "--file-selection",
+                "--directory",
+                "--title=Choose a folder containing comic pages",
+                f"--filename={start}/",
+            ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode == 1:
+            return None
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"{helper} exited unexpectedly."
+            raise RuntimeError(detail)
+        selected = result.stdout.strip()
+        return Path(selected).expanduser() if selected else None
+
+    raise RuntimeError(
+        "No desktop folder chooser was found. Install Zenity or KDialog."
+    )
 
 
 def windowed_size(desktop_width: int, desktop_height: int) -> tuple[int, int]:
@@ -78,6 +97,11 @@ def windowed_size(desktop_width: int, desktop_height: int) -> tuple[int, int]:
         max(1, round(desktop_width * width_ratio)),
         max(1, round(desktop_height * height_ratio)),
     )
+
+
+def reader_window_title(folder: Path) -> str:
+    """Return the reader title with the active folder clearly identified."""
+    return f"Comic and Scroll Reader — {folder.name or folder}"
 
 
 def _collapsible_group(title: str, content: list[list[sg.Element]], key: str) -> sg.Frame:
@@ -215,6 +239,8 @@ def build_reader_window(
     detect_double_spreads: bool = True,
     prevent_image_upscale: bool = False,
     stop_at_fit_width: bool = True,
+    top_bar_visible: bool = True,
+    title: str = "Comic and Scroll Reader",
 ) -> sg.Window:
     sg.theme("DarkGrey13")
     sg.set_options(font=UI_FONT)
@@ -307,6 +333,7 @@ def build_reader_window(
         sg.Text(
             "1 / 1",
             key=PAGE_COUNTER_KEY,
+            font=PAGE_COUNTER_FONT,
             tooltip="Go to page",
             enable_events=True,
             pad=((6, 6), (0, 0)),
@@ -320,16 +347,17 @@ def build_reader_window(
                     key=TOP_BAR_KEY,
                     expand_x=True,
                     pad=(0, 0),
-                    metadata={"visible": True},
+                    visible=top_bar_visible,
+                    metadata={"visible": top_bar_visible},
                 ),
                 expand_x=True,
             )
         ],
         [
             sg.Button(
-                "▲",
+                "▲" if top_bar_visible else "▼",
                 key=TOP_BAR_TOGGLE_KEY,
-                tooltip="Collapse top bar",
+                tooltip="Collapse top bar" if top_bar_visible else "Expand top bar",
                 expand_x=True,
                 border_width=0,
                 size=(None, TOP_BAR_TOGGLE_HEIGHT),
@@ -348,7 +376,7 @@ def build_reader_window(
         ],
     ]
     window = sg.Window(
-        "Comic and Image Scroll Reader",
+        title,
         layout,
         margins=(0, 0),
         resizable=True,
