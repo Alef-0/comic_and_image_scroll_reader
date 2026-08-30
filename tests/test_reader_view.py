@@ -1,6 +1,7 @@
 import unittest
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
 
@@ -77,12 +78,30 @@ class ReaderViewTests(unittest.TestCase):
         self.assertFalse(reader.go_to_page_number("three"))
         self.assertEqual(destinations, [2])
 
-    def test_selects_lanczos_for_reduction_and_bilinear_for_enlargement(self) -> None:
+    def test_navigation_keys_move_to_ends_and_by_one_screen(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_height = 300
+        reader.positions = [PagePosition(0, 0, 100, 1_000)]
+        distances: list[int] = []
+        reader.scroll = distances.append
+        reader.zoom = lambda _steps: None
+        reader.toggle_fullscreen = lambda: None
+        reader.request_close = lambda: None
+
+        shortcuts = reader._shortcut_actions()
+        shortcuts["<Home>"]()
+        shortcuts["<End>"]()
+        shortcuts["<Prior>"]()
+        shortcuts["<Next>"]()
+
+        self.assertEqual(distances, [-700, 700, -250, 250])
+
+    def test_selects_bicubic_for_reduction_and_enlargement(self) -> None:
         self.assertEqual(
-            _resize_filter((100, 200), (200, 400)), Image.Resampling.BILINEAR
+            _resize_filter((100, 200), (200, 400)), Image.Resampling.BICUBIC
         )
         self.assertEqual(
-            _resize_filter((100, 200), (50, 100)), Image.Resampling.LANCZOS
+            _resize_filter((100, 200), (50, 100)), Image.Resampling.BICUBIC
         )
 
     def test_zoom_limits_combine_fit_width_and_native_page_width(self) -> None:
@@ -108,18 +127,18 @@ class ReaderViewTests(unittest.TestCase):
         reader.stop_at_fit_width = True
         reader.prevent_image_upscale = False
         reader.dual_page = True
-        reader.page_borders = False
+        reader.page_spacing = False
 
         self.assertEqual(reader._maximum_strip_width(), 350)
 
-    def test_dual_page_fit_width_reserves_space_for_the_border(self) -> None:
+    def test_dual_page_fit_width_reserves_space_for_the_gap(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.desktop_width = 1_000
         reader.viewport_width = 700
         reader.stop_at_fit_width = True
         reader.prevent_image_upscale = False
         reader.dual_page = True
-        reader.page_borders = True
+        reader.page_spacing = True
 
         self.assertEqual(reader._maximum_strip_width(), 344)
 
@@ -128,7 +147,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.viewport_width = 700
         reader.stop_at_fit_width = True
         reader.dual_page = True
-        reader.page_borders = False
+        reader.page_spacing = False
+        reader.double_spread_indices = set()
         reader.pages = [
             ComicPage(Path("cover.png"), 900, 1_200),
             ComicPage(Path("small.png"), 300, 500),
@@ -139,6 +159,50 @@ class ReaderViewTests(unittest.TestCase):
             [reader._original_page_width(index) for index in range(3)],
             [700, 300, 350],
         )
+
+    def test_spread_width_matches_regular_page_height_until_fit_limit(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.pages = [
+            ComicPage(Path("one.png"), 600, 900),
+            ComicPage(Path("two.png"), 600, 900),
+            ComicPage(Path("spread.png"), 1_200, 900),
+        ]
+        reader.strip_width = 300
+        reader.desktop_width = 1_000
+        reader.typical_page_ratio = 2 / 3
+        reader.double_spread_indices = {2}
+        reader.viewport_width = 500
+        reader.page_spacing = True
+        reader.prevent_image_upscale = False
+        reader.stop_at_fit_width = False
+
+        self.assertEqual(reader._scaled_page_widths(), [300, 300, 600])
+        reader.stop_at_fit_width = True
+        self.assertEqual(reader._scaled_page_widths(), [300, 300, 500])
+
+    def test_horizontal_pan_is_limited_to_the_extra_image_width(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 700
+        reader.positions = [PagePosition(-250, 0, 1_200, 900)]
+
+        self.assertEqual(reader._clamped_pan_x(-500), -250)
+        self.assertEqual(reader._clamped_pan_x(500), 250)
+
+    def test_drag_moves_the_canvas_horizontally_and_vertically(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 700
+        reader.viewport_height = 500
+        reader.positions = [PagePosition(-250, 0, 1_200, 1_200)]
+        reader.pan_x = 0
+        reader.scroll_y = 300
+        reader._drag_last = (100, 100)
+        paints: list[bool] = []
+        reader.paint = lambda: paints.append(True)
+
+        reader._drag_moved(SimpleNamespace(x=150, y=140))
+
+        self.assertEqual((reader.pan_x, reader.scroll_y), (50, 260))
+        self.assertEqual(paints, [True])
 
     def test_opposite_zoom_replaces_the_stash(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)

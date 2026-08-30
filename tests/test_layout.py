@@ -4,8 +4,8 @@ from pathlib import Path
 from comic_scroll_reader.core.layout import (
     arrange_pages,
     clamp_scroll,
+    detect_double_spread_indices,
     neighboring_page_indices,
-    page_separator_rectangles,
     pages_nearest_to,
     visible_page_range,
 )
@@ -76,19 +76,43 @@ class LayoutTests(unittest.TestCase):
             [(item.x, item.y, item.width, item.height) for item in positions],
             [(150, 0, 100, 200), (94, 212, 100, 50), (206, 212, 100, 100)],
         )
-        self.assertEqual(
-            page_separator_rectangles(positions),
-            [(94, 200, 212, 12), (194, 212, 12, 50)],
-        )
 
-    def test_single_page_separators_have_no_outer_border(self) -> None:
+    def test_single_page_gaps_have_no_outer_spacing(self) -> None:
         positions = arrange_pages(
             self.pages, page_width=100, viewport_width=400, page_gap=12
         )
 
         self.assertEqual(
-            page_separator_rectangles(positions),
-            [(150, 200, 100, 12), (150, 262, 100, 12)],
+            [(item.x, item.y, item.width, item.height) for item in positions],
+            [(150, 0, 100, 200), (150, 212, 100, 50), (150, 274, 100, 100)],
+        )
+
+    def test_detects_pages_that_are_ratio_outliers(self) -> None:
+        pages = [
+            ComicPage(Path("one.png"), 600, 900),
+            ComicPage(Path("two.png"), 620, 900),
+            ComicPage(Path("spread.png"), 1_200, 900),
+            ComicPage(Path("three.png"), 590, 900),
+        ]
+
+        self.assertEqual(detect_double_spread_indices(pages), {2})
+
+    def test_detected_spread_occupies_a_solo_dual_page_row(self) -> None:
+        pages = self.pages + [
+            ComicPage(Path("four.png"), 100, 100),
+            ComicPage(Path("five.png"), 100, 100),
+        ]
+
+        positions = arrange_pages(
+            pages,
+            page_width=100,
+            viewport_width=400,
+            dual_page=True,
+            solo_page_indices={2},
+        )
+
+        self.assertEqual(
+            [position.y for position in positions], [0, 200, 250, 350, 350]
         )
 
     def test_arrangement_accepts_native_width_for_each_page(self) -> None:

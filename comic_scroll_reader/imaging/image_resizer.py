@@ -61,12 +61,7 @@ class ImageResizer:
                 else:
                     raise
 
-        working = image
-        if size[0] < image.width and size[1] < image.height:
-            reduction = min(image.width // size[0], image.height // size[1])
-            if reduction >= 2:
-                working = image.reduce(reduction)
-        return working.resize(size, cpu_filter)
+        return image.resize(size, cpu_filter)
 
     def _resize_cuda(
         self, image: Image.Image, size: tuple[int, int]
@@ -76,13 +71,8 @@ class ImageResizer:
         source = np.asarray(image)
         gpu_source = self._gpu_mat_type()
         gpu_source.upload(source)
-        interpolation = (
-            self._cv2.INTER_LINEAR
-            if size[0] > image.width or size[1] > image.height
-            else self._cv2.INTER_CUBIC
-        )
         gpu_result = self._cv2.cuda.resize(
-            gpu_source, size, interpolation=interpolation
+            gpu_source, size, interpolation=self._cv2.INTER_CUBIC
         )
         return Image.fromarray(gpu_result.download(), mode="RGB")
 

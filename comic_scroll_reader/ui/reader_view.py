@@ -3,6 +3,7 @@
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+from statistics import median
 import tkinter as tk
 from tkinter import ttk
 
@@ -12,8 +13,8 @@ from PIL import Image, ImageTk
 from ..core.layout import (
     arrange_pages,
     clamp_scroll,
+    detect_double_spread_indices,
     neighboring_page_indices,
-    page_separator_rectangles,
     pages_nearest_to,
     visible_page_range,
 )
@@ -37,12 +38,10 @@ def _photo_bytes(key: PhotoKey, _photo: ImageTk.PhotoImage) -> int:
 
 
 def _resize_filter(
-    source_size: tuple[int, int], target_size: tuple[int, int]
+    _source_size: tuple[int, int], _target_size: tuple[int, int]
 ) -> Image.Resampling:
-    """Use Lanczos3 for reductions and smooth bilinear enlargement."""
-    if target_size[0] > source_size[0] or target_size[1] > source_size[1]:
-        return Image.Resampling.BILINEAR
-    return Image.Resampling.LANCZOS
+    """Use bicubic interpolation for every resize operation."""
+    return Image.Resampling.BICUBIC
 
 
 class ComicStrip:
@@ -62,8 +61,7 @@ class ComicStrip:
     PRELOAD_STEP_DELAY_MS = 10
     PRELOAD_DISTANCE = 2
     CONTROL_MASK = 0x0004
-    PAGE_BORDER_SIZE = 12
-    PAGE_BORDER_COLOR = "#ffffff"
+    PAGE_GAP_SIZE = 12
 
     def __init__(
         self,
@@ -74,7 +72,10 @@ class ComicStrip:
         *,
         dual_page: bool = False,
         manga_reading: bool = False,
-        page_borders: bool = True,
+        page_spacing: bool = True,
+        detect_double_spreads: bool = True,
+        prevent_image_upscale: bool = False,
+        stop_at_fit_width: bool = True,
     ) -> None:
         self.window = window
         self.canvas: tk.Canvas = window["-CANVAS-"].TKCanvas
@@ -83,15 +84,20 @@ class ComicStrip:
         self.desktop_width = desktop_width
         self.viewport_width = max(1, self.canvas.winfo_width())
         self.viewport_height = max(1, self.canvas.winfo_height())
-        self.prevent_image_upscale = False
-        self.stop_at_fit_width = True
+        self.prevent_image_upscale = prevent_image_upscale
+        self.stop_at_fit_width = stop_at_fit_width
         self.dual_page = dual_page
         self.manga_reading = manga_reading
-        self.page_borders = page_borders
+        self.page_spacing = page_spacing
+        self.detect_double_spreads = detect_double_spreads
+        self.double_spread_indices: set[int] = set()
+        self.typical_page_ratio = 1.0
+        self._refresh_spread_analysis()
         self.original_size = False
         initial_width = max(1, round(desktop_width * self.START_WIDTH_RATIO))
         self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
+        self.pan_x = 0
         self.positions: list[PagePosition] = []
         self.source_images = MemoryShelf(self.SOURCE_CACHE_BYTES, _decoded_bytes)
         self.ready_photos = MemoryShelf(self.PHOTO_CACHE_BYTES, _photo_bytes)
@@ -109,8 +115,12 @@ class ComicStrip:
         self._pending_render_indices: list[int] = []
         self._pending_preload_indices: list[int] = []
         self._visible_range = (0, 0)
+        self._drag_last: tuple[int, int] | None = None
         self.canvas.configure(
-            background=CANVAS_COLOR, borderwidth=0, highlightthickness=0
+            background=CANVAS_COLOR,
+            borderwidth=0,
+            highlightthickness=0,
+            cursor="fleur",
         )
         # Overlaying the scrollbar keeps the comic's drawing width unchanged.
         self.scrollbar = ttk.Scrollbar(
@@ -160,13 +170,21 @@ class ComicStrip:
         self.canvas.bind("<Button-4>", self._wheel_moved)
         self.canvas.bind("<Button-5>", self._wheel_moved)
         self.canvas.bind("<Configure>", self._canvas_resized)
-        self.canvas.bind("<Button-1>", lambda _event: self.canvas.focus_set())
+        self.canvas.bind("<ButtonPress-1>", self._start_drag)
+        self.canvas.bind("<B1-Motion>", self._drag_moved)
+        self.canvas.bind("<ButtonRelease-1>", self._end_drag)
         self.scrollbar.bind("<MouseWheel>", self._wheel_moved)
         self.scrollbar.bind("<Button-4>", self._wheel_moved)
         self.scrollbar.bind("<Button-5>", self._wheel_moved)
 
+        for sequence, action in self._shortcut_actions().items():
+            self.window.TKroot.bind(sequence, self._keyboard_action(action))
+        self.canvas.focus_set()
+
+    def _shortcut_actions(self) -> dict[str, Callable[[], None]]:
+        """Return keyboard bindings as actions that can be verified independently."""
         one_screen = lambda: max(1, self.viewport_height - 50)
-        shortcuts: dict[str, Callable[[], None]] = {
+        return {
             "<Down>": lambda: self.scroll(self.WHEEL_STEP),
             "<j>": lambda: self.scroll(self.WHEEL_STEP),
             "<s>": lambda: self.scroll(self.WHEEL_STEP),
@@ -188,9 +206,6 @@ class ComicStrip:
             "<q>": self.request_close,
             "<Q>": self.request_close,
         }
-        for sequence, action in shortcuts.items():
-            self.window.TKroot.bind(sequence, self._keyboard_action(action))
-        self.canvas.focus_set()
 
     @staticmethod
     def _keyboard_action(action: Callable[[], None]) -> Callable[[tk.Event], str]:
@@ -279,21 +294,98 @@ class ComicStrip:
             self.scroll(-direction * steps * self.WHEEL_STEP)
         return "break"
 
+    def _start_drag(self, event: tk.Event) -> str:
+        self.canvas.focus_set()
+        self.stop_zooming()
+        self._drag_last = (int(event.x), int(event.y))
+        return "break"
+
+    def _drag_moved(self, event: tk.Event) -> str:
+        current = (int(event.x), int(event.y))
+        if self._drag_last is None:
+            self._drag_last = current
+            return "break"
+        delta_x = current[0] - self._drag_last[0]
+        delta_y = current[1] - self._drag_last[1]
+        self._drag_last = current
+        new_pan_x = self._clamped_pan_x(self.pan_x + delta_x)
+        new_scroll_y = clamp_scroll(
+            self.scroll_y - delta_y,
+            self.content_height,
+            self.viewport_height,
+        )
+        if (new_pan_x, new_scroll_y) != (self.pan_x, self.scroll_y):
+            self.pan_x = new_pan_x
+            self.scroll_y = new_scroll_y
+            self.paint()
+        return "break"
+
+    def _end_drag(self, _event: tk.Event) -> str:
+        self._drag_last = None
+        return "break"
+
+    def _refresh_spread_analysis(self) -> None:
+        if self.detect_double_spreads:
+            self.double_spread_indices = detect_double_spread_indices(self.pages)
+        else:
+            self.double_spread_indices = set()
+        regular_ratios = [
+            page.native_width / page.native_height
+            for index, page in enumerate(self.pages)
+            if index not in self.double_spread_indices
+        ]
+        all_ratios = [page.native_width / page.native_height for page in self.pages]
+        self.typical_page_ratio = median(regular_ratios or all_ratios or [1.0])
+
+    def _scaled_page_widths(self) -> list[int]:
+        widths = [self.strip_width] * len(self.pages)
+        target_height = self.strip_width / max(self.typical_page_ratio, 0.01)
+        for index in self.double_spread_indices:
+            page = self.pages[index]
+            page_ratio = page.native_width / page.native_height
+            width = max(1, round(target_height * page_ratio))
+            width = min(
+                width, max(1, round(self.desktop_width * self.MAX_WIDTH_RATIO))
+            )
+            if self.stop_at_fit_width:
+                width = min(width, self._fitted_page_width(1))
+            if self.prevent_image_upscale:
+                width = min(width, page.native_width)
+            widths[index] = width
+        return widths
+
     def _arrange_strip(self) -> None:
-        page_widths: int | list[int] = self.strip_width
+        page_widths = self._scaled_page_widths()
         if self.original_size:
-            page_widths = [self._original_page_width(index) for index in range(len(self.pages))]
+            page_widths = [
+                self._original_page_width(index) for index in range(len(self.pages))
+            ]
         self.positions = arrange_pages(
             self.pages,
             page_widths,
             self.viewport_width,
             dual_page=self.dual_page,
             manga_reading=self.manga_reading,
-            page_gap=self.PAGE_BORDER_SIZE if self.page_borders else 0,
+            page_gap=self.PAGE_GAP_SIZE if self.page_spacing else 0,
+            solo_page_indices=self.double_spread_indices,
         )
         self.scroll_y = clamp_scroll(
             self.scroll_y, self.content_height, self.viewport_height
         )
+        self.pan_x = self._clamped_pan_x(self.pan_x)
+
+    def _clamped_pan_x(self, pan_x: int) -> int:
+        if not self.positions:
+            return 0
+        content_left = min(position.x for position in self.positions)
+        content_right = max(
+            position.x + position.width for position in self.positions
+        )
+        if content_right - content_left <= self.viewport_width:
+            return 0
+        minimum = self.viewport_width - content_right
+        maximum = -content_left
+        return min(max(pan_x, minimum), maximum)
 
     def _source_image(self, page: ComicPage) -> Image.Image | None:
         image = self.source_images.get(page.file)
@@ -453,13 +545,14 @@ class ComicStrip:
         native_width = self.pages[index].native_width
         if not self.stop_at_fit_width:
             return native_width
-        columns = 2 if self.dual_page and index > 0 else 1
+        is_solo = index == 0 or index in self.double_spread_indices
+        columns = 2 if self.dual_page and not is_solo else 1
         return min(native_width, self._fitted_page_width(columns))
 
     def _fitted_page_width(self, columns: int) -> int:
         gap = (
-            self.PAGE_BORDER_SIZE
-            if columns > 1 and getattr(self, "page_borders", True)
+            self.PAGE_GAP_SIZE
+            if columns > 1 and getattr(self, "page_spacing", True)
             else 0
         )
         return max(1, (self.viewport_width - gap) // columns)
@@ -490,6 +583,10 @@ class ComicStrip:
         maximum = self._maximum_strip_width()
         if self.strip_width > maximum:
             self._set_strip_width(maximum, self.viewport_height // 2)
+            return
+        self._arrange_strip()
+        self.paint(priority_y=self.viewport_height // 2)
+        self._show_status()
 
     def set_page_layout(self, *, dual_page: bool, manga_reading: bool) -> None:
         self.stop_zooming()
@@ -509,17 +606,36 @@ class ComicStrip:
         self.paint(priority_y=anchor)
         self._show_status()
 
-    def set_page_borders(self, enabled: bool) -> None:
-        """Show or hide white separators while preserving the reading position."""
-        if enabled == self.page_borders:
+    def set_page_spacing(self, enabled: bool) -> None:
+        """Show or hide background-colored gaps between neighboring pages."""
+        if enabled == self.page_spacing:
             return
         self.stop_zooming()
         old_height = max(1, self.content_height)
         anchor = self.viewport_height // 2
         reading_position = (self.scroll_y + anchor) / old_height
-        self.page_borders = enabled
+        self.page_spacing = enabled
         if not self.original_size:
             self.strip_width = min(self.strip_width, self._maximum_strip_width())
+        self._arrange_strip()
+        self.scroll_y = clamp_scroll(
+            round(reading_position * self.content_height - anchor),
+            self.content_height,
+            self.viewport_height,
+        )
+        self.paint(priority_y=anchor)
+        self._show_status()
+
+    def set_double_spread_detection(self, enabled: bool) -> None:
+        """Toggle ratio-based spread detection while preserving reading position."""
+        if enabled == self.detect_double_spreads:
+            return
+        self.stop_zooming()
+        old_height = max(1, self.content_height)
+        anchor = self.viewport_height // 2
+        reading_position = (self.scroll_y + anchor) / old_height
+        self.detect_double_spreads = enabled
+        self._refresh_spread_analysis()
         self._arrange_strip()
         self.scroll_y = clamp_scroll(
             round(reading_position * self.content_height - anchor),
@@ -533,10 +649,12 @@ class ComicStrip:
         self.stop_zooming()
         self.pages = pages
         self.folder = folder
+        self._refresh_spread_analysis()
         self.original_size = False
         initial_width = max(1, round(self.viewport_width * self.START_WIDTH_RATIO))
         self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
+        self.pan_x = 0
         self.source_images.clear()
         self.ready_photos.clear()
         self._clear_canvas()
@@ -574,7 +692,9 @@ class ComicStrip:
         size = (position.width, position.height)
         existing = self.canvas_pages.get(page.file)
         if existing is not None and existing[2] == size:
-            self.canvas.coords(existing[0], position.x, position.y - self.scroll_y)
+            self.canvas.coords(
+                existing[0], position.x + self.pan_x, position.y - self.scroll_y
+            )
             return
 
         # Do the expensive resize before removing the old canvas image. During
@@ -585,7 +705,7 @@ class ComicStrip:
         if existing is not None:
             self.canvas.delete(existing[0])
         item = self.canvas.create_image(
-            position.x,
+            position.x + self.pan_x,
             position.y - self.scroll_y,
             anchor="nw",
             image=photo,
@@ -606,9 +726,17 @@ class ComicStrip:
             size = (position.width, position.height)
             existing = self.canvas_pages.get(page.file)
             if existing is not None and existing[2] == size:
-                self.canvas.coords(existing[0], position.x, position.y - self.scroll_y)
+                self.canvas.coords(
+                    existing[0],
+                    position.x + self.pan_x,
+                    position.y - self.scroll_y,
+                )
             elif existing is not None:
-                placeholder_x = (self.viewport_width - existing[2][0]) // 2
+                placeholder_x = (
+                    position.x
+                    + (position.width - existing[2][0]) // 2
+                    + self.pan_x
+                )
                 self.canvas.coords(
                     existing[0], placeholder_x, position.y - self.scroll_y
                 )
@@ -633,7 +761,6 @@ class ComicStrip:
             self._render_page(index)
 
         self.canvas.tag_lower("comic-page")
-        self._paint_page_borders()
         self._visible_range = (first, last)
         self._pending_render_indices = prioritized[self.IMMEDIATE_RENDER_COUNT :]
         if self._pending_render_indices:
@@ -647,25 +774,6 @@ class ComicStrip:
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the
         # reader feel immediate without forcing a full event-loop update.
         self.canvas.update_idletasks()
-
-    def _paint_page_borders(self) -> None:
-        self.canvas.delete("page-border")
-        if not self.page_borders:
-            return
-        for x, y, width, height in page_separator_rectangles(self.positions):
-            canvas_y = y - self.scroll_y
-            if canvas_y + height <= 0 or canvas_y >= self.viewport_height:
-                continue
-            self.canvas.create_rectangle(
-                x,
-                canvas_y,
-                x + width,
-                canvas_y + height,
-                fill=self.PAGE_BORDER_COLOR,
-                outline="",
-                tags=("page-border",),
-            )
-        self.canvas.tag_lower("page-border")
 
     def _render_next_page(self) -> None:
         self._render_job = None
@@ -726,8 +834,13 @@ class ComicStrip:
             zoom = "Original"
         else:
             zoom = f"{round(100 * self.strip_width / max(1, self.viewport_width))}%"
+        spread_status = ""
+        if self.detect_double_spreads:
+            count = len(self.double_spread_indices)
+            spread_status = f"  •  {count} {'spread' if count == 1 else 'spreads'}"
         self.window["-STATUS-"].update(
-            f"{self.folder.name}  •  {zoom}  •  {self.image_resizer.backend_name}"
+            f"{self.folder.name}  •  {zoom}{spread_status}"
+            f"  •  {self.image_resizer.backend_name}"
         )
 
     def _show_page_counter(self) -> None:

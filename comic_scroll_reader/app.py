@@ -6,6 +6,7 @@ from pathlib import Path
 
 import FreeSimpleGUI as sg
 
+from .config import CONFIG_PATH, load_config, save_config
 from .files.bookshelf import scan_bookshelf
 from .ui.reader_view import ComicStrip
 from .ui.window import (
@@ -67,6 +68,23 @@ def _open_another_folder(reader: ComicStrip) -> None:
         sg.popup_error(f"No readable supported images were found in:\n{selected}")
 
 
+def _save_current_config(reader: ComicStrip) -> None:
+    config = {
+        "prevent_image_upscale": reader.prevent_image_upscale,
+        "stop_at_fit_width": reader.stop_at_fit_width,
+        "dual_page": reader.dual_page,
+        "manga_reading": reader.manga_reading,
+        "page_spacing": reader.page_spacing,
+        "detect_double_spreads": reader.detect_double_spreads,
+    }
+    try:
+        save_config(config)
+    except OSError as error:
+        sg.popup_error(f"Unable to save configurations:\n{error}")
+        return
+    sg.popup_ok(f"Configurations saved to:\n{CONFIG_PATH}", title="Save Configs")
+
+
 def run_reader(
     folder: Path,
     *,
@@ -82,11 +100,18 @@ def run_reader(
         sg.popup_error(f"No readable supported images were found in:\n{folder}")
         return 1
 
+    config = load_config()
+    dual_page = dual_page or config["dual_page"]
+    manga_reading = manga_reading or config["manga_reading"]
     screen_width, screen_height = desktop_size()
     window = build_reader_window(
         windowed_size(screen_width, screen_height),
         dual_page=dual_page,
         manga_reading=manga_reading,
+        page_spacing=config["page_spacing"],
+        detect_double_spreads=config["detect_double_spreads"],
+        prevent_image_upscale=config["prevent_image_upscale"],
+        stop_at_fit_width=config["stop_at_fit_width"],
     )
     try:
         # Establish and paint a useful normal-window geometry first. Besides
@@ -100,6 +125,10 @@ def run_reader(
             screen_width,
             dual_page=dual_page,
             manga_reading=manga_reading,
+            page_spacing=config["page_spacing"],
+            detect_double_spreads=config["detect_double_spreads"],
+            prevent_image_upscale=config["prevent_image_upscale"],
+            stop_at_fit_width=config["stop_at_fit_width"],
         )
         window.refresh()
         if start_maximized:
@@ -112,6 +141,7 @@ def run_reader(
             "-FIT-": reader.fit_width,
             "-ORIGINAL-SIZE-": reader.show_original_size,
             "-FULLSCREEN-": reader.toggle_fullscreen,
+            "-SAVE-CONFIGS-": lambda: _save_current_config(reader),
         }
         while not reader.should_close:
             event, values = window.read(timeout=50)
@@ -141,8 +171,13 @@ def run_reader(
                     manga_reading=bool(values["-MANGA-READING-"]),
                 )
                 continue
-            if event == "-PAGE-BORDERS-":
-                reader.set_page_borders(bool(values["-PAGE-BORDERS-"]))
+            if event == "-PAGE-SPACING-":
+                reader.set_page_spacing(bool(values["-PAGE-SPACING-"]))
+                continue
+            if event == "-DETECT-DOUBLE-SPREADS-":
+                reader.set_double_spread_detection(
+                    bool(values["-DETECT-DOUBLE-SPREADS-"])
+                )
                 continue
             action = actions.get(event)
             if action is not None:

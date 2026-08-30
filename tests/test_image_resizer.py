@@ -48,7 +48,7 @@ class ImageResizerTests(unittest.TestCase):
         resizer = ImageResizer(cv2)
 
         result = resizer.resize(
-            Image.new("RGB", (20, 30)), (10, 15), Image.Resampling.LANCZOS
+            Image.new("RGB", (20, 30)), (10, 15), Image.Resampling.BICUBIC
         )
 
         self.assertEqual(resizer.backend_name, "CUDA")
@@ -59,11 +59,21 @@ class ImageResizerTests(unittest.TestCase):
         resizer = ImageResizer(FakeCv2(0))
 
         result = resizer.resize(
-            Image.new("RGB", (20, 30)), (10, 15), Image.Resampling.LANCZOS
+            Image.new("RGB", (20, 30)), (10, 15), Image.Resampling.BICUBIC
         )
 
         self.assertEqual(resizer.backend_name, "CPU")
         self.assertEqual(result.size, (10, 15))
+
+    def test_uses_bicubic_cuda_interpolation_when_enlarging(self) -> None:
+        cv2 = FakeCv2(1)
+        resizer = ImageResizer(cv2)
+
+        resizer.resize(
+            Image.new("RGB", (10, 15)), (20, 30), Image.Resampling.BICUBIC
+        )
+
+        self.assertEqual(cv2.cuda.interpolation, cv2.INTER_CUBIC)
 
 
 if __name__ == "__main__":

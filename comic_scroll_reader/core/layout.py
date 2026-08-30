@@ -1,7 +1,8 @@
 """Pure geometry helpers for the continuous page strip."""
 
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
+from statistics import median
 
 from .models import ComicPage, PagePosition
 
@@ -14,8 +15,9 @@ def arrange_pages(
     dual_page: bool = False,
     manga_reading: bool = False,
     page_gap: int = 0,
+    solo_page_indices: Collection[int] = (),
 ) -> list[PagePosition]:
-    """Arrange pages in a centered strip, optionally pairing pages after one."""
+    """Arrange pages in a centered strip, keeping requested pages in solo rows."""
     widths = (
         [page_width] * len(pages)
         if isinstance(page_width, int)
@@ -23,13 +25,19 @@ def arrange_pages(
     )
     cursor_y = 0
     positions: list[PagePosition] = []
+    solo_pages = set(solo_page_indices)
     index = 0
     while index < len(pages):
-        row_indices = (
-            [index]
-            if not dual_page or index == 0
-            else list(range(index, min(index + 2, len(pages))))
-        )
+        row_indices = [index]
+        next_index = index + 1
+        if (
+            dual_page
+            and index != 0
+            and index not in solo_pages
+            and next_index < len(pages)
+            and next_index not in solo_pages
+        ):
+            row_indices.append(next_index)
         display_indices = list(reversed(row_indices)) if manga_reading else row_indices
         row_width = sum(widths[item] for item in row_indices)
         row_width += page_gap * max(0, len(row_indices) - 1)
@@ -51,49 +59,18 @@ def arrange_pages(
     return positions
 
 
-def page_separator_rectangles(
-    positions: Sequence[PagePosition],
-) -> list[tuple[int, int, int, int]]:
-    """Return the empty rectangles separating neighboring pages."""
-    rows: list[list[PagePosition]] = []
-    for position in positions:
-        if not rows or rows[-1][0].y != position.y:
-            rows.append([position])
-        else:
-            rows[-1].append(position)
-
-    separators: list[tuple[int, int, int, int]] = []
-    for row_index, row in enumerate(rows):
-        left_to_right = sorted(row, key=lambda position: position.x)
-        for left, right in zip(left_to_right, left_to_right[1:]):
-            separator_x = left.x + left.width
-            separator_width = right.x - separator_x
-            separator_height = min(left.bottom, right.bottom) - left.y
-            if separator_width > 0 and separator_height > 0:
-                separators.append(
-                    (separator_x, left.y, separator_width, separator_height)
-                )
-
-        if row_index + 1 >= len(rows):
-            continue
-        next_row = rows[row_index + 1]
-        row_bottom = max(position.bottom for position in row)
-        separator_height = next_row[0].y - row_bottom
-        if separator_height <= 0:
-            continue
-        separator_x = min(position.x for position in (*row, *next_row))
-        separator_right = max(
-            position.x + position.width for position in (*row, *next_row)
-        )
-        separators.append(
-            (
-                separator_x,
-                row_bottom,
-                separator_right - separator_x,
-                separator_height,
-            )
-        )
-    return separators
+def detect_double_spread_indices(
+    pages: Sequence[ComicPage], width_ratio_multiplier: float = 1.5
+) -> set[int]:
+    """Detect pages substantially wider than the folder's typical page shape."""
+    if len(pages) < 2:
+        return set()
+    ratios = [page.native_width / page.native_height for page in pages]
+    sorted_ratios = sorted(ratios)
+    typical_sample = sorted_ratios[: max(1, (len(sorted_ratios) + 1) // 2)]
+    typical_ratio = median(typical_sample)
+    threshold = typical_ratio * width_ratio_multiplier
+    return {index for index, ratio in enumerate(ratios) if ratio > threshold}
 
 
 def visible_page_range(

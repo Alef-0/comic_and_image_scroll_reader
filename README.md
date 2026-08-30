@@ -151,13 +151,28 @@ self-contained.
 python3 -m unittest discover -s tests -v
 ```
 
-Use the mouse wheel or arrow keys to scroll, Ctrl+wheel to zoom, F11 for
-fullscreen, and Escape to close the reader. Zoom stops at the fitted window
-width by default; clear **Stop at fit width** to zoom farther, or enable
+Use the mouse wheel or arrow keys to scroll. **Page Up** and **Page Down** move
+one screen at a time, while **Home** and **End** jump to the beginning or end.
+Ctrl+wheel zooms, F11 toggles fullscreen, and Escape closes the reader. Zoom
+stops at the fitted window width by default; clear **Stop at fit width** to zoom
+farther, or enable
 **Don't enlarge images** to keep every page at or below its native width.
 **Original Size** uses each image's native dimensions, reducing only images
 that would exceed their available width while **Stop at fit width** is active.
 In dual-page mode the cover remains alone and later pages are paired; **Manga
-order** swaps the left and right pages in each pair. **Page borders** adds a
-small white separator between pages without adding an outer border to the
-first or last page.
+order** swaps the left and right pages in each pair. **Page spacing** leaves a
+small background-colored gap between neighboring pages without adding outer
+spacing before the first or after the last page.
+
+The experimental **Detect double-page spreads** option is enabled by default.
+It compares page proportions within the folder, scales unusually wide images
+to the normal page height until they reach the width limit, and gives every
+detected spread its own row in dual-page mode. Click and drag anywhere on the
+reader to pan vertically or horizontally when an image is wider than the
+window.
+
+All page resizing uses bicubic interpolation on both the CPU and CUDA paths.
+Use **Options → Save Configs** to persist the current checkbox settings. They
+are loaded automatically from `reader_config.json` beside `run_reader.py`, so
+the configuration location does not depend on the directory used to launch
+the reader.

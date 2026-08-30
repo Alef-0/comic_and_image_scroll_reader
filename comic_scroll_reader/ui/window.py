@@ -20,9 +20,10 @@ TOP_BAR_TOGGLE_KEY = "-TOGGLE-TOP-BAR-"
 PAGE_COUNTER_KEY = "-PAGE-COUNTER-"
 PAGE_NUMBER_INPUT_KEY = "-PAGE-NUMBER-"
 COLLAPSIBLE_GROUPS = {
-    "-FILE-GROUP-": ("File", "-FILE-GROUP-CONTENT-"),
+    "-FILE-GROUP-": ("Options", "-FILE-GROUP-CONTENT-"),
     "-IMAGE-SIZE-GROUP-": ("Image size", "-IMAGE-SIZE-GROUP-CONTENT-"),
     "-PAGE-LAYOUT-GROUP-": ("Page layout", "-PAGE-LAYOUT-GROUP-CONTENT-"),
+    "-EXPERIMENTAL-GROUP-": ("Experimental", "-EXPERIMENTAL-GROUP-CONTENT-"),
     "-WINDOW-GROUP-": ("Window", "-WINDOW-GROUP-CONTENT-"),
 }
 
@@ -210,12 +211,23 @@ def build_reader_window(
     *,
     dual_page: bool = False,
     manga_reading: bool = False,
+    page_spacing: bool = True,
+    detect_double_spreads: bool = True,
+    prevent_image_upscale: bool = False,
+    stop_at_fit_width: bool = True,
 ) -> sg.Window:
     sg.theme("DarkGrey13")
     sg.set_options(font=UI_FONT)
     controls = [
         _collapsible_group(
-            "File", [[sg.Button("Open Folder", key="-OPEN-")]], "-FILE-GROUP-"
+            "Options",
+            [
+                [
+                    sg.Button("Open Folder", key="-OPEN-"),
+                    sg.Button("Save Configs", key="-SAVE-CONFIGS-"),
+                ]
+            ],
+            "-FILE-GROUP-",
         ),
         _collapsible_group(
             "Image size",
@@ -227,13 +239,13 @@ def build_reader_window(
                     sg.Button("Original Size", key="-ORIGINAL-SIZE-"),
                     sg.Checkbox(
                         "Don't enlarge images",
-                        default=False,
+                        default=prevent_image_upscale,
                         key="-LIMIT-NATIVE-",
                         enable_events=True,
                     ),
                     sg.Checkbox(
                         "Stop at fit width",
-                        default=True,
+                        default=stop_at_fit_width,
                         key="-LIMIT-FIT-",
                         enable_events=True,
                     ),
@@ -259,15 +271,32 @@ def build_reader_window(
                         tooltip="Show paired pages from right to left",
                     ),
                     sg.Checkbox(
-                        "Page borders",
-                        default=True,
-                        key="-PAGE-BORDERS-",
+                        "Page spacing",
+                        default=page_spacing,
+                        key="-PAGE-SPACING-",
                         enable_events=True,
-                        tooltip="Show white separators between pages",
+                        tooltip="Leave background-colored space between pages",
                     ),
                 ]
             ],
             "-PAGE-LAYOUT-GROUP-",
+        ),
+        _collapsible_group(
+            "Experimental",
+            [
+                [
+                    sg.Checkbox(
+                        "Detect double-page spreads",
+                        default=detect_double_spreads,
+                        key="-DETECT-DOUBLE-SPREADS-",
+                        enable_events=True,
+                        tooltip=(
+                            "Detect unusually wide images and keep them in solo rows"
+                        ),
+                    )
+                ]
+            ],
+            "-EXPERIMENTAL-GROUP-",
         ),
         _collapsible_group(
             "Window",

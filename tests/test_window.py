@@ -47,12 +47,12 @@ class WindowControlTests(unittest.TestCase):
         self.assertTrue(toggle_collapsible_group(window, "-FILE-GROUP-::toggle"))
         self.assertTrue(content.metadata["expanded"])
         self.assertEqual(content.updates[-1], {"visible": True})
-        self.assertEqual(header.updates[-1], {"text": "File ▾"})
+        self.assertEqual(header.updates[-1], {"text": "Options ▾"})
 
         toggle_collapsible_group(window, "-FILE-GROUP-::toggle")
         self.assertFalse(content.metadata["expanded"])
         self.assertEqual(content.updates[-1], {"visible": False})
-        self.assertEqual(header.updates[-1], {"text": "File ▸"})
+        self.assertEqual(header.updates[-1], {"text": "Options ▸"})
 
     def test_non_group_event_is_not_consumed(self) -> None:
         self.assertFalse(toggle_collapsible_group(FakeWindow(), "-OPEN-"))
