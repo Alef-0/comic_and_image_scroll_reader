@@ -5,6 +5,7 @@ from comic_scroll_reader.core.layout import (
     arrange_pages,
     clamp_scroll,
     neighboring_page_indices,
+    page_separator_rectangles,
     pages_nearest_to,
     visible_page_range,
 )
@@ -61,6 +62,34 @@ class LayoutTests(unittest.TestCase):
         )
 
         self.assertEqual([item.x for item in positions], [150, 200, 100])
+
+    def test_page_gap_is_only_inserted_between_pages(self) -> None:
+        positions = arrange_pages(
+            self.pages,
+            page_width=100,
+            viewport_width=400,
+            dual_page=True,
+            page_gap=12,
+        )
+
+        self.assertEqual(
+            [(item.x, item.y, item.width, item.height) for item in positions],
+            [(150, 0, 100, 200), (94, 212, 100, 50), (206, 212, 100, 100)],
+        )
+        self.assertEqual(
+            page_separator_rectangles(positions),
+            [(94, 200, 212, 12), (194, 212, 12, 50)],
+        )
+
+    def test_single_page_separators_have_no_outer_border(self) -> None:
+        positions = arrange_pages(
+            self.pages, page_width=100, viewport_width=400, page_gap=12
+        )
+
+        self.assertEqual(
+            page_separator_rectangles(positions),
+            [(150, 200, 100, 12), (150, 262, 100, 12)],
+        )
 
     def test_arrangement_accepts_native_width_for_each_page(self) -> None:
         positions = arrange_pages(

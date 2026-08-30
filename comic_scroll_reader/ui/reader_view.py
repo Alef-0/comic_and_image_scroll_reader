@@ -13,6 +13,7 @@ from ..core.layout import (
     arrange_pages,
     clamp_scroll,
     neighboring_page_indices,
+    page_separator_rectangles,
     pages_nearest_to,
     visible_page_range,
 )
@@ -61,6 +62,8 @@ class ComicStrip:
     PRELOAD_STEP_DELAY_MS = 10
     PRELOAD_DISTANCE = 2
     CONTROL_MASK = 0x0004
+    PAGE_BORDER_SIZE = 12
+    PAGE_BORDER_COLOR = "#ffffff"
 
     def __init__(
         self,
@@ -71,6 +74,7 @@ class ComicStrip:
         *,
         dual_page: bool = False,
         manga_reading: bool = False,
+        page_borders: bool = True,
     ) -> None:
         self.window = window
         self.canvas: tk.Canvas = window["-CANVAS-"].TKCanvas
@@ -83,6 +87,7 @@ class ComicStrip:
         self.stop_at_fit_width = True
         self.dual_page = dual_page
         self.manga_reading = manga_reading
+        self.page_borders = page_borders
         self.original_size = False
         initial_width = max(1, round(desktop_width * self.START_WIDTH_RATIO))
         self.strip_width = min(initial_width, self._maximum_strip_width())
@@ -284,6 +289,7 @@ class ComicStrip:
             self.viewport_width,
             dual_page=self.dual_page,
             manga_reading=self.manga_reading,
+            page_gap=self.PAGE_BORDER_SIZE if self.page_borders else 0,
         )
         self.scroll_y = clamp_scroll(
             self.scroll_y, self.content_height, self.viewport_height
@@ -422,8 +428,7 @@ class ComicStrip:
 
     def fit_width(self) -> None:
         self.stop_zooming()
-        columns = 2 if self.dual_page else 1
-        target_width = max(1, self.viewport_width // columns)
+        target_width = self._fitted_page_width(2 if self.dual_page else 1)
         if self.prevent_image_upscale:
             target_width = min(target_width, self._native_width_limit())
         self._set_strip_width(target_width, self.viewport_height // 2)
@@ -449,7 +454,15 @@ class ComicStrip:
         if not self.stop_at_fit_width:
             return native_width
         columns = 2 if self.dual_page and index > 0 else 1
-        return min(native_width, max(1, self.viewport_width // columns))
+        return min(native_width, self._fitted_page_width(columns))
+
+    def _fitted_page_width(self, columns: int) -> int:
+        gap = (
+            self.PAGE_BORDER_SIZE
+            if columns > 1 and getattr(self, "page_borders", True)
+            else 0
+        )
+        return max(1, (self.viewport_width - gap) // columns)
 
     def _native_width_limit(self) -> int:
         return min((page.native_width for page in self.pages), default=1)
@@ -458,7 +471,7 @@ class ComicStrip:
         maximum = max(1, round(self.desktop_width * self.MAX_WIDTH_RATIO))
         if self.stop_at_fit_width:
             columns = 2 if self.dual_page else 1
-            maximum = min(maximum, max(1, self.viewport_width // columns))
+            maximum = min(maximum, self._fitted_page_width(columns))
         if self.prevent_image_upscale:
             maximum = min(maximum, self._native_width_limit())
         return max(1, maximum)
@@ -485,6 +498,26 @@ class ComicStrip:
         reading_position = (self.scroll_y + anchor) / old_height
         self.dual_page = dual_page
         self.manga_reading = manga_reading
+        if not self.original_size:
+            self.strip_width = min(self.strip_width, self._maximum_strip_width())
+        self._arrange_strip()
+        self.scroll_y = clamp_scroll(
+            round(reading_position * self.content_height - anchor),
+            self.content_height,
+            self.viewport_height,
+        )
+        self.paint(priority_y=anchor)
+        self._show_status()
+
+    def set_page_borders(self, enabled: bool) -> None:
+        """Show or hide white separators while preserving the reading position."""
+        if enabled == self.page_borders:
+            return
+        self.stop_zooming()
+        old_height = max(1, self.content_height)
+        anchor = self.viewport_height // 2
+        reading_position = (self.scroll_y + anchor) / old_height
+        self.page_borders = enabled
         if not self.original_size:
             self.strip_width = min(self.strip_width, self._maximum_strip_width())
         self._arrange_strip()
@@ -600,6 +633,7 @@ class ComicStrip:
             self._render_page(index)
 
         self.canvas.tag_lower("comic-page")
+        self._paint_page_borders()
         self._visible_range = (first, last)
         self._pending_render_indices = prioritized[self.IMMEDIATE_RENDER_COUNT :]
         if self._pending_render_indices:
@@ -613,6 +647,25 @@ class ComicStrip:
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the
         # reader feel immediate without forcing a full event-loop update.
         self.canvas.update_idletasks()
+
+    def _paint_page_borders(self) -> None:
+        self.canvas.delete("page-border")
+        if not self.page_borders:
+            return
+        for x, y, width, height in page_separator_rectangles(self.positions):
+            canvas_y = y - self.scroll_y
+            if canvas_y + height <= 0 or canvas_y >= self.viewport_height:
+                continue
+            self.canvas.create_rectangle(
+                x,
+                canvas_y,
+                x + width,
+                canvas_y + height,
+                fill=self.PAGE_BORDER_COLOR,
+                outline="",
+                tags=("page-border",),
+            )
+        self.canvas.tag_lower("page-border")
 
     def _render_next_page(self) -> None:
         self._render_job = None

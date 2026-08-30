@@ -158,4 +158,6 @@ width by default; clear **Stop at fit width** to zoom farther, or enable
 **Original Size** uses each image's native dimensions, reducing only images
 that would exceed their available width while **Stop at fit width** is active.
 In dual-page mode the cover remains alone and later pages are paired; **Manga
-order** swaps the left and right pages in each pair.
+order** swaps the left and right pages in each pair. **Page borders** adds a
+small white separator between pages without adding an outer border to the
+first or last page.

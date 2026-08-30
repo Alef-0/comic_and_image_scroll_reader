@@ -13,6 +13,7 @@ def arrange_pages(
     *,
     dual_page: bool = False,
     manga_reading: bool = False,
+    page_gap: int = 0,
 ) -> list[PagePosition]:
     """Arrange pages in a centered strip, optionally pairing pages after one."""
     widths = (
@@ -31,6 +32,7 @@ def arrange_pages(
         )
         display_indices = list(reversed(row_indices)) if manga_reading else row_indices
         row_width = sum(widths[item] for item in row_indices)
+        row_width += page_gap * max(0, len(row_indices) - 1)
         cursor_x = (viewport_width - row_width) // 2
         row_height = 0
         row_positions: dict[int, PagePosition] = {}
@@ -39,12 +41,59 @@ def arrange_pages(
             page = pages[item]
             height = max(1, round(page.native_height * width / page.native_width))
             row_positions[item] = PagePosition(cursor_x, cursor_y, width, height)
-            cursor_x += width
+            cursor_x += width + page_gap
             row_height = max(row_height, height)
         positions.extend(row_positions[item] for item in row_indices)
         cursor_y += row_height
         index += len(row_indices)
+        if index < len(pages):
+            cursor_y += page_gap
     return positions
+
+
+def page_separator_rectangles(
+    positions: Sequence[PagePosition],
+) -> list[tuple[int, int, int, int]]:
+    """Return the empty rectangles separating neighboring pages."""
+    rows: list[list[PagePosition]] = []
+    for position in positions:
+        if not rows or rows[-1][0].y != position.y:
+            rows.append([position])
+        else:
+            rows[-1].append(position)
+
+    separators: list[tuple[int, int, int, int]] = []
+    for row_index, row in enumerate(rows):
+        left_to_right = sorted(row, key=lambda position: position.x)
+        for left, right in zip(left_to_right, left_to_right[1:]):
+            separator_x = left.x + left.width
+            separator_width = right.x - separator_x
+            separator_height = min(left.bottom, right.bottom) - left.y
+            if separator_width > 0 and separator_height > 0:
+                separators.append(
+                    (separator_x, left.y, separator_width, separator_height)
+                )
+
+        if row_index + 1 >= len(rows):
+            continue
+        next_row = rows[row_index + 1]
+        row_bottom = max(position.bottom for position in row)
+        separator_height = next_row[0].y - row_bottom
+        if separator_height <= 0:
+            continue
+        separator_x = min(position.x for position in (*row, *next_row))
+        separator_right = max(
+            position.x + position.width for position in (*row, *next_row)
+        )
+        separators.append(
+            (
+                separator_x,
+                row_bottom,
+                separator_right - separator_x,
+                separator_height,
+            )
+        )
+    return separators
 
 
 def visible_page_range(

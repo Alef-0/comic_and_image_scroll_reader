@@ -108,14 +108,27 @@ class ReaderViewTests(unittest.TestCase):
         reader.stop_at_fit_width = True
         reader.prevent_image_upscale = False
         reader.dual_page = True
+        reader.page_borders = False
 
         self.assertEqual(reader._maximum_strip_width(), 350)
+
+    def test_dual_page_fit_width_reserves_space_for_the_border(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.desktop_width = 1_000
+        reader.viewport_width = 700
+        reader.stop_at_fit_width = True
+        reader.prevent_image_upscale = False
+        reader.dual_page = True
+        reader.page_borders = True
+
+        self.assertEqual(reader._maximum_strip_width(), 344)
 
     def test_original_size_only_reduces_pages_that_exceed_available_width(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.viewport_width = 700
         reader.stop_at_fit_width = True
         reader.dual_page = True
+        reader.page_borders = False
         reader.pages = [
             ComicPage(Path("cover.png"), 900, 1_200),
             ComicPage(Path("small.png"), 300, 500),

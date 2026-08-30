@@ -258,6 +258,13 @@ def build_reader_window(
                         enable_events=True,
                         tooltip="Show paired pages from right to left",
                     ),
+                    sg.Checkbox(
+                        "Page borders",
+                        default=True,
+                        key="-PAGE-BORDERS-",
+                        enable_events=True,
+                        tooltip="Show white separators between pages",
+                    ),
                 ]
             ],
             "-PAGE-LAYOUT-GROUP-",

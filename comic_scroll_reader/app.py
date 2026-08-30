@@ -141,6 +141,9 @@ def run_reader(
                     manga_reading=bool(values["-MANGA-READING-"]),
                 )
                 continue
+            if event == "-PAGE-BORDERS-":
+                reader.set_page_borders(bool(values["-PAGE-BORDERS-"]))
+                continue
             action = actions.get(event)
             if action is not None:
                 action()
