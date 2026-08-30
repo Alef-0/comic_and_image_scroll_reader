@@ -20,7 +20,7 @@ from ..core.memory import MemoryShelf
 from ..core.models import ComicPage, PagePosition
 from ..files.bookshelf import open_page
 from ..imaging.image_resizer import ImageResizer
-from .window import CANVAS_COLOR
+from .window import CANVAS_COLOR, PAGE_COUNTER_KEY
 
 
 PhotoKey = tuple[Path, int, int]
@@ -126,6 +126,29 @@ class ComicStrip:
     @property
     def maximum_scroll(self) -> int:
         return max(0, self.content_height - self.viewport_height)
+
+    @property
+    def current_page_number(self) -> int:
+        """Return the last visible page as a user-facing one-based number."""
+        return self._visible_range[1] if self.pages else 0
+
+    @property
+    def page_counter_text(self) -> str:
+        """Describe the last visible page or its active dual-page spread."""
+        total = len(self.pages)
+        if not total:
+            return "0 / 0"
+        last_index = self.current_page_number - 1
+        if not self.dual_page:
+            return f"{last_index + 1} / {total}"
+
+        row_y = self.positions[last_index].y
+        first_index = last_index
+        while first_index > 0 and self.positions[first_index - 1].y == row_y:
+            first_index -= 1
+        if first_index == last_index:
+            return f"{last_index + 1} / {total}"
+        return f"{first_index + 1}-{last_index + 1} / {total}"
 
     def _connect_controls(self) -> None:
         self.canvas.bind("<MouseWheel>", self._wheel_moved)
@@ -307,6 +330,22 @@ class ComicStrip:
         if target != self.scroll_y:
             self.scroll_y = target
             self.paint()
+
+    def go_to_page(self, index: int) -> None:
+        """Move to a zero-based page index, clamped to the available pages."""
+        if not self.positions:
+            return
+        page_index = min(max(index, 0), len(self.positions) - 1)
+        self.scroll_to(self.positions[page_index].y)
+
+    def go_to_page_number(self, value: object) -> bool:
+        """Move to a user-facing one-based page number when it is an integer."""
+        try:
+            page_number = int(str(value).strip())
+        except (TypeError, ValueError):
+            return False
+        self.go_to_page(page_number - 1)
+        return True
 
     def _scrollbar_moved(
         self, action: str, amount: str, unit: str | None = None
@@ -570,6 +609,7 @@ class ComicStrip:
         else:
             self._schedule_neighbor_preload()
         self._sync_scrollbar()
+        self._show_page_counter()
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the
         # reader feel immediate without forcing a full event-loop update.
         self.canvas.update_idletasks()
@@ -634,6 +674,8 @@ class ComicStrip:
         else:
             zoom = f"{round(100 * self.strip_width / max(1, self.viewport_width))}%"
         self.window["-STATUS-"].update(
-            f"{self.folder.name}  •  {len(self.pages)} pages  •  "
-            f"{zoom}  •  {self.image_resizer.backend_name}"
+            f"{self.folder.name}  •  {zoom}  •  {self.image_resizer.backend_name}"
         )
+
+    def _show_page_counter(self) -> None:
+        self.window[PAGE_COUNTER_KEY].update(value=self.page_counter_text)

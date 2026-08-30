@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from comic_scroll_reader.core.models import ComicPage
+from comic_scroll_reader.core.models import ComicPage, PagePosition
 from comic_scroll_reader.ui.reader_view import ComicStrip, _resize_filter
 
 
@@ -23,6 +23,60 @@ class FakeCanvas:
 
 
 class ReaderViewTests(unittest.TestCase):
+    def test_counter_uses_the_last_visible_page(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.pages = [object(), object(), object()]
+        reader.positions = [
+            PagePosition(0, 0, 100, 200),
+            PagePosition(0, 200, 100, 200),
+            PagePosition(0, 400, 100, 50),
+        ]
+        reader.dual_page = False
+        reader._visible_range = (1, 3)
+
+        self.assertEqual(reader.current_page_number, 3)
+        self.assertEqual(reader.page_counter_text, "3 / 3")
+
+    def test_dual_page_counter_shows_the_last_visible_spread(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.pages = [object(), object(), object(), object(), object()]
+        reader.positions = [
+            PagePosition(100, 0, 100, 200),
+            PagePosition(100, 200, 100, 200),
+            PagePosition(200, 200, 100, 200),
+            PagePosition(100, 400, 100, 200),
+            PagePosition(200, 400, 100, 200),
+        ]
+        reader.dual_page = True
+        reader._visible_range = (0, 3)
+
+        self.assertEqual(reader.page_counter_text, "2-3 / 5")
+
+    def test_go_to_page_clamps_indices_to_the_available_range(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.positions = [
+            PagePosition(0, 0, 100, 100),
+            PagePosition(0, 100, 100, 100),
+            PagePosition(0, 200, 100, 100),
+        ]
+        destinations: list[int] = []
+        reader.scroll_to = destinations.append
+
+        reader.go_to_page(-10)
+        reader.go_to_page(1)
+        reader.go_to_page(10)
+
+        self.assertEqual(destinations, [0, 100, 200])
+
+    def test_go_to_page_number_accepts_one_based_input_and_rejects_text(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        destinations: list[int] = []
+        reader.go_to_page = destinations.append
+
+        self.assertTrue(reader.go_to_page_number(" 3 "))
+        self.assertFalse(reader.go_to_page_number("three"))
+        self.assertEqual(destinations, [2])
+
     def test_selects_lanczos_for_reduction_and_bilinear_for_enlargement(self) -> None:
         self.assertEqual(
             _resize_filter((100, 200), (200, 400)), Image.Resampling.BILINEAR

@@ -9,10 +9,12 @@ import FreeSimpleGUI as sg
 from .files.bookshelf import scan_bookshelf
 from .ui.reader_view import ComicStrip
 from .ui.window import (
+    ask_for_page_number,
     ask_for_bookshelf,
     build_reader_window,
     desktop_size,
     maximize,
+    PAGE_COUNTER_KEY,
     TOP_BAR_TOGGLE_KEY,
     toggle_collapsible_group,
     toggle_top_bar,
@@ -119,6 +121,13 @@ def run_reader(
                 continue
             if event == TOP_BAR_TOGGLE_KEY:
                 toggle_top_bar(window)
+                continue
+            if event == PAGE_COUNTER_KEY:
+                page_number = ask_for_page_number(
+                    reader.current_page_number, len(reader.pages)
+                )
+                if page_number is not None:
+                    reader.go_to_page_number(page_number)
                 continue
             if event in {"-LIMIT-NATIVE-", "-LIMIT-FIT-"}:
                 reader.set_zoom_limits(

@@ -17,6 +17,8 @@ TOP_BAR_TOGGLE_HEIGHT = 1
 GROUP_TOGGLE_SUFFIX = "::toggle"
 TOP_BAR_KEY = "-TOP-BAR-"
 TOP_BAR_TOGGLE_KEY = "-TOGGLE-TOP-BAR-"
+PAGE_COUNTER_KEY = "-PAGE-COUNTER-"
+PAGE_NUMBER_INPUT_KEY = "-PAGE-NUMBER-"
 COLLAPSIBLE_GROUPS = {
     "-FILE-GROUP-": ("File", "-FILE-GROUP-CONTENT-"),
     "-IMAGE-SIZE-GROUP-": ("Image size", "-IMAGE-SIZE-GROUP-CONTENT-"),
@@ -155,6 +157,54 @@ def toggle_top_bar(window: sg.Window) -> None:
     toggle.set_tooltip("Collapse top bar" if visible else "Expand top bar")
 
 
+def ask_for_page_number(current: int, total: int) -> str | None:
+    """Display a compact page-jump dialog with consistently sized controls."""
+    layout = [
+        [
+            sg.Text(
+                f"Enter a page number (1-{total}):",
+                expand_x=True,
+                justification="center",
+            )
+        ],
+        [
+            sg.Input(
+                str(current),
+                key=PAGE_NUMBER_INPUT_KEY,
+                justification="center",
+                focus=True,
+                expand_x=True,
+            )
+        ],
+        [
+            sg.Push(),
+            sg.Button("Cancel", key="-CANCEL-PAGE-JUMP-", size=(10, 1)),
+            sg.Button(
+                "OK",
+                key="-CONFIRM-PAGE-JUMP-",
+                size=(10, 1),
+                bind_return_key=True,
+            ),
+            sg.Push(),
+        ],
+    ]
+    dialog = sg.Window(
+        "Go to page",
+        layout,
+        modal=True,
+        keep_on_top=True,
+        finalize=True,
+        element_justification="center",
+    )
+    try:
+        event, values = dialog.read()
+        if event != "-CONFIRM-PAGE-JUMP-":
+            return None
+        return str(values[PAGE_NUMBER_INPUT_KEY])
+    finally:
+        dialog.close()
+
+
 def build_reader_window(
     size: tuple[int, int] | None = None,
     *,
@@ -218,6 +268,13 @@ def build_reader_window(
             "-WINDOW-GROUP-",
         ),
         sg.Text("", key="-STATUS-", expand_x=True, justification="right"),
+        sg.Text(
+            "1 / 1",
+            key=PAGE_COUNTER_KEY,
+            tooltip="Go to page",
+            enable_events=True,
+            pad=((6, 6), (0, 0)),
+        ),
     ]
     layout = [
         [
@@ -264,6 +321,7 @@ def build_reader_window(
         use_default_focus=False,
     )
     _install_clickable_group_headers(window)
+    window[PAGE_COUNTER_KEY].Widget.configure(cursor="hand2")
     window[TOP_BAR_TOGGLE_KEY].Widget.configure(pady=0, highlightthickness=0)
     return window
 
