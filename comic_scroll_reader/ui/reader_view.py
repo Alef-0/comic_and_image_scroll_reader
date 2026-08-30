@@ -870,7 +870,6 @@ class ComicStrip:
             spread_status = f"  •  {count} {'spread' if count == 1 else 'spreads'}"
         self.window["-STATUS-"].update(
             f"{self.folder.name}  •  {zoom}{spread_status}"
-            f"  •  {self.image_resizer.backend_name}"
         )
 
     def _show_page_counter(self) -> None:

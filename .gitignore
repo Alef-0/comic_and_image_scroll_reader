@@ -9,3 +9,4 @@ dist/
 /run_reader.build/*
 /run_reader.dist/*
 /reader_config.json
+/comic-scroll-reader

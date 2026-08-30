@@ -9,62 +9,8 @@ vertical strip.
 python3 -m pip install -r requirements.txt
 ```
 
-OpenCV is intentionally not installed from PyPI: the standard wheels do not
-include CUDA. The reader automatically uses CUDA resizing when a CUDA-enabled
-`cv2` module is visible to the active Python environment, and otherwise uses
-Pillow on the CPU. The active backend appears at the right of the toolbar.
-
-### Use a custom OpenCV build in a virtual environment
-
-First remove any wheel that could take precedence over the custom build:
-
-```bash
-python -m pip uninstall opencv-python opencv-python-headless \
-  opencv-contrib-python opencv-contrib-python-headless
-```
-
-The preferred override is to install your locally built wheel into each active
-environment. This does not contact PyPI:
-
-```bash
-python -m pip install --force-reinstall /path/to/numpy-wheel.whl
-python -m pip install --force-reinstall --no-deps /path/to/opencv-wheel.whl
-```
-
-The wheel's Python and platform tags must match the environment (for example,
-`cp312` requires CPython 3.12).
-
-If you have no wheel and OpenCV was installed into a system prefix such as
-`/usr/local`, add the directory that contains its `cv2` package to the
-environment with a `.pth` file. Replace the example source path with the one
-printed by your custom Python outside the environment:
-
-```bash
-python3 -c 'import cv2; print(cv2.__file__)'
-python -c 'import site; print(site.getsitepackages()[0])'
-printf '%s\n' '/usr/local/lib/python3.12/site-packages' \
-  > .venv/lib/python3.12/site-packages/custom-opencv.pth
-```
-
-Use the Python version in your own paths. Repeat the `.pth` step for each
-virtual environment. The path can also be the build tree's `python_loader`
-directory if you have not installed the compiled build yet. The OpenCV build
-and virtual environment must use the same Python major/minor version.
-
-Alternatively, install the already-built OpenCV tree directly into the active
-environment if its install layout is relocatable:
-
-```bash
-cmake --install /path/to/opencv-build --prefix "$VIRTUAL_ENV"
-```
-
-Confirm that the environment loads the intended binary and sees CUDA:
-
-```bash
-python -c 'import cv2; print(cv2.__file__); print(cv2.cuda.getCudaEnabledDeviceCount())'
-```
-
-The final number must be greater than zero for this reader to select CUDA.
+The reader uses OpenCV bicubic resizing on the CPU. Pillow remains a fallback
+if OpenCV cannot resize an image.
 
 ## Run
 
@@ -93,11 +39,11 @@ python3 run_reader.py --dual-page /path/to/comic
 python3 run_reader.py --dual-page --manga /path/to/comic
 ```
 
-## Build a standalone binary
+## Build a compact binary
 
 Run these commands from the project directory. They create an isolated Python
 environment, install the application and compiler dependencies, and build the
-standalone program:
+compressed program:
 
 ```bash
 python3 -m venv .venv
@@ -106,44 +52,41 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip install nuitka ordered-set zstandard
 chmod +x build_binary.sh
-./build_binary.sh .venv/bin/python
-
-# Note if you have compiled opencv
-python -m pip install --force-reinstall \
-  ~/opencv-python/wheelhouse/numpy-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-
-python -m pip install --force-reinstall --no-deps \
-  ~/opencv-python/wheelhouse/opencv_python-4.14.0.94-cp312-cp312-linux_x86_64.whl
+chmod +x build_minimal_opencv.sh
+./build_minimal_opencv.sh .venv/bin/python
+./build_binary.sh \
+  --minimal-opencv build/minimal-opencv/cv2.so \
+  .venv/bin/python
 ```
 
 The build can take several minutes. When it finishes, start the compiled
 program with:
 
 ```bash
-./run_reader.dist/comic-scroll-reader
+./comic-scroll-reader
 ```
 
 To open an image folder directly, pass its path after the command:
 
 ```bash
-./run_reader.dist/comic-scroll-reader /path/to/comic
+./comic-scroll-reader /path/to/comic
 ```
 
-OpenCV is optional. Without it, the binary uses the Pillow CPU fallback. To
-build with a custom CUDA-enabled OpenCV, install or expose that `cv2` build in
-the virtual environment before running `build_binary.sh`, following the custom
-OpenCV instructions above. To avoid copying the large native OpenCV library
-into the standalone directory, pass its existing location explicitly:
+The compact build compiles only OpenCV's core, image-processing, and Python
+binding modules. It excludes CUDA, codecs, video, GUI, DNN, contrib modules,
+and Intel IPP while retaining SIMD-optimized CPU resizing. Nuitka then excludes
+unused NumPy packages and compresses the application into one executable.
 
-```bash
-./build_binary.sh \
-  --external-opencv /home/alef/opencv-python/_skbuild/linux-x86_64-3.12/cmake-build/lib/python3/cv2.abi3.so \
-  .venv/bin/python
-```
+`build_minimal_opencv.sh` automatically looks for the OpenCV source checkout
+associated with the selected environment's `cv2` installation. If OpenCV came
+from a normal precompiled wheel, that source is not present; download or clone
+OpenCV and pass it explicitly with `--opencv-source /path/to/opencv-source`.
 
-The resulting binary depends on that exact external file and is therefore not
-portable to another machine. A build without `--external-opencv` remains
-self-contained.
+On the tested Linux system this reduced the distributable executable from
+about 88 MB to about 33 MB. The exact size depends on the compiler and system
+libraries. Running `build_binary.sh` without `--minimal-opencv` uses the OpenCV
+installation from the selected Python environment and may produce a much
+larger executable.
 
 ## Tests
 
@@ -171,7 +114,7 @@ detected spread its own row in dual-page mode. Click and drag anywhere on the
 reader to pan vertically or horizontally when an image is wider than the
 window.
 
-All page resizing uses bicubic interpolation on both the CPU and CUDA paths.
+All page resizing uses bicubic interpolation.
 Use **Options → Save Configs** to persist the current checkbox settings. They
 are loaded automatically from `reader_config.json` beside `run_reader.py`, so
 the configuration location does not depend on the directory used to launch
