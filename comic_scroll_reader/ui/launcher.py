@@ -21,6 +21,7 @@ CONFIG_KEYS = {
     "manga_reading": "-LAUNCHER-MANGA-READING-",
     "page_spacing": "-LAUNCHER-PAGE-SPACING-",
     "detect_double_spreads": "-LAUNCHER-DETECT-SPREADS-",
+    "remember_folder": "-LAUNCHER-REMEMBER-FOLDER-",
 }
 CONFIG_LABELS = {
     "prevent_image_upscale": "Don't enlarge images",
@@ -29,6 +30,7 @@ CONFIG_LABELS = {
     "manga_reading": "Manga order",
     "page_spacing": "Page spacing",
     "detect_double_spreads": "Detect double-page spreads",
+    "remember_folder": "Remember folder",
 }
 
 
@@ -80,7 +82,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
             CONFIG_LABELS[name],
             default=bool(config[name]),
             key=CONFIG_KEYS[name],
-            pad=((8, 12), (4, 4)),
+            pad=((8, 8), (4, 4)),
         )
         for name in CONFIG_KEYS
     ]
@@ -120,19 +122,19 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
                         sg.Text(
                             f"Saved in {CONFIG_PATH}",
                             text_color="#aebbd4",
-                            expand_x=True,
                         ),
                         sg.Button("Save settings", key=SAVE_KEY),
                     ],
                 ],
+                title_location=sg.TITLE_LOCATION_TOP,
+                element_justification="center",
                 expand_x=True,
                 pad=(12, (4, 12)),
             )
         ],
-        [sg.Text("Developed by Alef-0", expand_x=True, justification="center")],
         [
             sg.Text(
-                "Vibecoded using OpenAI GPT-5.6 Codex — an agentic coding model",
+                "Developed by Alef-0  •  Vibecoded using GPT5.6 - Codex",
                 expand_x=True,
                 justification="center",
             )
