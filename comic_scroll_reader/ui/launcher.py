@@ -191,7 +191,7 @@ def run_launcher() -> Path | None:
                 return selected
             if event == DROP_ZONE_KEY:
                 try:
-                    selected = ask_for_bookshelf()
+                    selected = ask_for_bookshelf(parent=window.TKroot)
                 except RuntimeError as error:
                     sg.popup_error(f"Unable to open the system folder chooser:\n{error}")
                     continue

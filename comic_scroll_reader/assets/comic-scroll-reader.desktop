@@ -7,4 +7,4 @@ Icon=comic-scroll-reader
 Terminal=false
 Categories=Graphics;Viewer;
 MimeType=inode/directory;
-StartupNotify=true
+StartupNotify=false

@@ -1,11 +1,14 @@
+import os
 import unittest
 from pathlib import Path
 import tkinter as tk
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from comic_scroll_reader.ui.window import (
     TOP_BAR_KEY,
     TOP_BAR_TOGGLE_KEY,
+    ask_for_bookshelf,
     is_maximized,
     reader_window_title,
     size_from_geometry,
@@ -39,6 +42,32 @@ class FakeWindow(dict):
 
 
 class WindowControlTests(unittest.TestCase):
+    @patch("comic_scroll_reader.ui.window.subprocess.run")
+    @patch("comic_scroll_reader.ui.window.shutil.which")
+    def test_folder_chooser_is_attached_and_modal_to_parent_window(
+        self, which, run
+    ) -> None:
+        which.return_value = "/usr/bin/zenity"
+        run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="")
+        parent = SimpleNamespace(
+            update_idletasks=lambda: None,
+            winfo_id=lambda: 4242,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "DESKTOP_STARTUP_ID": "stale-startup-token",
+                "XDG_ACTIVATION_TOKEN": "stale-activation-token",
+            },
+        ):
+            self.assertIsNone(ask_for_bookshelf(Path("/comics"), parent))
+        self.assertIn("--attach=4242", run.call_args.args[0])
+        self.assertIn("--modal", run.call_args.args[0])
+        dialog_environment = run.call_args.kwargs["env"]
+        self.assertNotIn("DESKTOP_STARTUP_ID", dialog_environment)
+        self.assertNotIn("XDG_ACTIVATION_TOKEN", dialog_environment)
+
     def test_destroyed_window_is_not_reported_as_maximized(self) -> None:
         destroyed = SimpleNamespace(
             attributes=lambda _name: (_ for _ in ()).throw(tk.TclError()),

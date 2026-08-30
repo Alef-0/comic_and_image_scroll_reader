@@ -60,10 +60,19 @@ def ask_for_bookshelf(
     starting_at: Path | None = None, parent: tk.Misc | None = None
 ) -> Path | None:
     """Ask for a page folder through the current desktop's dialog helper."""
-    del parent  # Native dialog helpers do not use Tk parent windows.
     start = (starting_at or Path.home()).expanduser().resolve()
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").casefold()
     helpers = ["kdialog", "zenity"] if "kde" in desktop else ["zenity", "kdialog"]
+    dialog_environment = os.environ.copy()
+    dialog_environment.pop("DESKTOP_STARTUP_ID", None)
+    dialog_environment.pop("XDG_ACTIVATION_TOKEN", None)
+    parent_id: int | None = None
+    if parent is not None:
+        try:
+            parent.update_idletasks()
+            parent_id = int(parent.winfo_id())
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            parent_id = None
 
     for helper in helpers:
         if shutil.which(helper) is None:
@@ -71,6 +80,7 @@ def ask_for_bookshelf(
         if helper == "kdialog":
             command = [
                 helper,
+                *(["--attach", str(parent_id)] if parent_id else []),
                 "--getexistingdirectory",
                 str(start),
                 "--title",
@@ -79,12 +89,20 @@ def ask_for_bookshelf(
         else:
             command = [
                 helper,
+                *([f"--attach={parent_id}"] if parent_id else []),
+                "--modal",
                 "--file-selection",
                 "--directory",
                 "--title=Choose a folder containing comic pages",
                 f"--filename={start}/",
             ]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=dialog_environment,
+        )
         if result.returncode == 1:
             return None
         if result.returncode != 0:
