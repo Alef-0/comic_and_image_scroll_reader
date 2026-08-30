@@ -15,20 +15,23 @@ CANVAS_COLOR = "#1c1c1c"
 UI_FONT = ("TkDefaultFont", 11, "bold")
 GROUP_HEADER_FONT = ("TkDefaultFont", 10, "bold")
 PAGE_COUNTER_FONT = ("TkDefaultFont", 11, "bold underline")
+CLICKABLE_TEXT_FONT = ("TkDefaultFont", 11, "bold underline")
 TOP_BAR_TOGGLE_FONT = ("TkDefaultFont", 5, "bold")
 TOP_BAR_TOGGLE_HEIGHT = 1
 GROUP_TOGGLE_SUFFIX = "::toggle"
 TOP_BAR_KEY = "-TOP-BAR-"
 TOP_BAR_TOGGLE_KEY = "-TOGGLE-TOP-BAR-"
 PAGE_COUNTER_KEY = "-PAGE-COUNTER-"
+ZOOM_STATUS_KEY = "-ZOOM-STATUS-"
+ZOOM_OUT_KEY = "-ZOOM-OUT-"
+ZOOM_IN_KEY = "-ZOOM-IN-"
 PAGE_NUMBER_INPUT_KEY = "-PAGE-NUMBER-"
 COLLAPSIBLE_GROUPS = {
-    "-FILE-GROUP-": ("Options", "-FILE-GROUP-CONTENT-"),
     "-IMAGE-SIZE-GROUP-": ("Image size", "-IMAGE-SIZE-GROUP-CONTENT-"),
     "-PAGE-LAYOUT-GROUP-": ("Page layout", "-PAGE-LAYOUT-GROUP-CONTENT-"),
     "-EXPERIMENTAL-GROUP-": ("Experimental", "-EXPERIMENTAL-GROUP-CONTENT-"),
-    "-WINDOW-GROUP-": ("Window", "-WINDOW-GROUP-CONTENT-"),
 }
+BUTTON_PAD = ((2, 2), (1, 1))
 
 
 def desktop_size() -> tuple[int, int]:
@@ -104,7 +107,13 @@ def reader_window_title(folder: Path) -> str:
     return f"Comic and Scroll Reader — {folder.name or folder}"
 
 
-def _collapsible_group(title: str, content: list[list[sg.Element]], key: str) -> sg.Frame:
+def _collapsible_group(
+    title: str,
+    content: list[list[sg.Element]],
+    key: str,
+    *,
+    expanded: bool = False,
+) -> sg.Frame:
     """Create a group whose compact title remains visible while collapsed."""
     content_key = COLLAPSIBLE_GROUPS[key][1]
     return sg.Frame(
@@ -115,9 +124,9 @@ def _collapsible_group(title: str, content: list[list[sg.Element]], key: str) ->
                     sg.Column(
                         content,
                         key=content_key,
-                        visible=False,
+                        visible=expanded,
                         pad=(0, 0),
-                        metadata={"expanded": False},
+                        metadata={"expanded": expanded},
                     )
                 )
             ]
@@ -134,9 +143,10 @@ def _install_clickable_group_headers(window: sg.Window) -> None:
         frame = window[frame_key]
         labelframe: tk.LabelFrame = frame.Widget
         background = labelframe.cget("background")
+        expanded = bool(window[_content_key].metadata["expanded"])
         header = tk.Button(
             labelframe,
-            text=f"{title} ▸",
+            text=f"{title} {'▾' if expanded else '▸'}",
             command=lambda key=frame_key: window.write_event_value(
                 f"{key}{GROUP_TOGGLE_SUFFIX}", None
             ),
@@ -240,29 +250,20 @@ def build_reader_window(
     prevent_image_upscale: bool = False,
     stop_at_fit_width: bool = True,
     top_bar_visible: bool = True,
+    expand_all: bool = False,
     title: str = "Comic and Scroll Reader",
 ) -> sg.Window:
     sg.theme("DarkGrey13")
     sg.set_options(font=UI_FONT)
     controls = [
-        _collapsible_group(
-            "Options",
-            [
-                [
-                    sg.Button("Open Folder", key="-OPEN-"),
-                    sg.Button("Save Configs", key="-SAVE-CONFIGS-"),
-                ]
-            ],
-            "-FILE-GROUP-",
-        ),
+        sg.Button("Open Folder", key="-OPEN-", pad=BUTTON_PAD),
+        sg.Button("Save Configs", key="-SAVE-CONFIGS-", pad=BUTTON_PAD),
         _collapsible_group(
             "Image size",
             [
                 [
-                    sg.Button("−", key="-ZOOM-OUT-", tooltip="Zoom out (Ctrl+-)"),
-                    sg.Button("+", key="-ZOOM-IN-", tooltip="Zoom in (Ctrl++)"),
-                    sg.Button("Fit Width", key="-FIT-"),
-                    sg.Button("Original Size", key="-ORIGINAL-SIZE-"),
+                    sg.Button("Fit Width", key="-FIT-", pad=BUTTON_PAD),
+                    sg.Button("Original Size", key="-ORIGINAL-SIZE-", pad=BUTTON_PAD),
                     sg.Checkbox(
                         "Don't enlarge images",
                         default=prevent_image_upscale,
@@ -278,6 +279,7 @@ def build_reader_window(
                 ],
             ],
             "-IMAGE-SIZE-GROUP-",
+            expanded=expand_all,
         ),
         _collapsible_group(
             "Page layout",
@@ -306,6 +308,7 @@ def build_reader_window(
                 ]
             ],
             "-PAGE-LAYOUT-GROUP-",
+            expanded=expand_all,
         ),
         _collapsible_group(
             "Experimental",
@@ -323,15 +326,28 @@ def build_reader_window(
                 ]
             ],
             "-EXPERIMENTAL-GROUP-",
-        ),
-        _collapsible_group(
-            "Window",
-            [[sg.Button("Fullscreen", key="-FULLSCREEN-", tooltip="Toggle fullscreen (F11)")]],
-            "-WINDOW-GROUP-",
+            expanded=expand_all,
         ),
         sg.Text("", key="-STATUS-", expand_x=True, justification="right"),
         sg.Text(
-            "1 / 1",
+            "−",
+            key=ZOOM_OUT_KEY,
+            font=CLICKABLE_TEXT_FONT,
+            tooltip="Zoom out (-)",
+            enable_events=True,
+            pad=((5, 2), (0, 0)),
+        ),
+        sg.Text("75%", key=ZOOM_STATUS_KEY, pad=((2, 2), (0, 0))),
+        sg.Text(
+            "+",
+            key=ZOOM_IN_KEY,
+            font=CLICKABLE_TEXT_FONT,
+            tooltip="Zoom in (+)",
+            enable_events=True,
+            pad=((2, 5), (0, 0)),
+        ),
+        sg.Text(
+            "Pages 1 / 1",
             key=PAGE_COUNTER_KEY,
             font=PAGE_COUNTER_FONT,
             tooltip="Go to page",
@@ -385,7 +401,8 @@ def build_reader_window(
         use_default_focus=False,
     )
     _install_clickable_group_headers(window)
-    window[PAGE_COUNTER_KEY].Widget.configure(cursor="hand2")
+    for key in (PAGE_COUNTER_KEY, ZOOM_OUT_KEY, ZOOM_IN_KEY):
+        window[key].Widget.configure(cursor="hand2")
     window[TOP_BAR_TOGGLE_KEY].Widget.configure(pady=0, highlightthickness=0)
     return window
 

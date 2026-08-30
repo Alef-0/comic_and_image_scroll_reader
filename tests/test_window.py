@@ -47,20 +47,22 @@ class WindowControlTests(unittest.TestCase):
         frame = FakeElement({"header_widget": header})
         window = FakeWindow(
             {
-                "-FILE-GROUP-CONTENT-": content,
-                "-FILE-GROUP-": frame,
+                "-IMAGE-SIZE-GROUP-CONTENT-": content,
+                "-IMAGE-SIZE-GROUP-": frame,
             }
         )
 
-        self.assertTrue(toggle_collapsible_group(window, "-FILE-GROUP-::toggle"))
+        self.assertTrue(
+            toggle_collapsible_group(window, "-IMAGE-SIZE-GROUP-::toggle")
+        )
         self.assertTrue(content.metadata["expanded"])
         self.assertEqual(content.updates[-1], {"visible": True})
-        self.assertEqual(header.updates[-1], {"text": "Options ▾"})
+        self.assertEqual(header.updates[-1], {"text": "Image size ▾"})
 
-        toggle_collapsible_group(window, "-FILE-GROUP-::toggle")
+        toggle_collapsible_group(window, "-IMAGE-SIZE-GROUP-::toggle")
         self.assertFalse(content.metadata["expanded"])
         self.assertEqual(content.updates[-1], {"visible": False})
-        self.assertEqual(header.updates[-1], {"text": "Options ▸"})
+        self.assertEqual(header.updates[-1], {"text": "Image size ▸"})
 
     def test_non_group_event_is_not_consumed(self) -> None:
         self.assertFalse(toggle_collapsible_group(FakeWindow(), "-OPEN-"))

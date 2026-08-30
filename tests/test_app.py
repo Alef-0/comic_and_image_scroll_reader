@@ -29,10 +29,13 @@ class ApplicationArgumentsTests(unittest.TestCase):
         self.assertFalse(arguments.start_maximized)
 
     def test_page_layout_flags_enable_startup_options(self) -> None:
-        arguments = read_arguments(["--dual-page", "--manga", "pages"])
+        arguments = read_arguments(
+            ["--dual-page", "--manga", "--expand-all", "pages"]
+        )
 
         self.assertTrue(arguments.dual_page)
         self.assertTrue(arguments.manga_reading)
+        self.assertTrue(arguments.expand_all)
 
     @patch("comic_scroll_reader.app.save_config")
     @patch("comic_scroll_reader.app.load_config")

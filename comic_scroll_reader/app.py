@@ -19,6 +19,8 @@ from .ui.window import (
     PAGE_COUNTER_KEY,
     TOP_BAR_TOGGLE_KEY,
     TOP_BAR_KEY,
+    ZOOM_IN_KEY,
+    ZOOM_OUT_KEY,
     reader_window_title,
     toggle_collapsible_group,
     toggle_top_bar,
@@ -55,6 +57,11 @@ def read_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         dest="manga_reading",
         help="start with right-to-left ordering for paired pages",
+    )
+    parser.add_argument(
+        "--expand-all",
+        action="store_true",
+        help="start with every collapsible toolbar menu open for UI inspection",
     )
     return parser.parse_args(argv)
 
@@ -111,6 +118,7 @@ def run_reader(
     start_maximized: bool = True,
     dual_page: bool = False,
     manga_reading: bool = False,
+    expand_all: bool = False,
 ) -> int:
     if not folder.is_dir():
         sg.popup_error(f"This is not a folder:\n{folder}")
@@ -133,6 +141,7 @@ def run_reader(
         prevent_image_upscale=config["prevent_image_upscale"],
         stop_at_fit_width=config["stop_at_fit_width"],
         top_bar_visible=config["top_bar_visible"],
+        expand_all=expand_all,
         title=reader_window_title(folder),
     )
     try:
@@ -158,11 +167,10 @@ def run_reader(
             window.refresh()
         actions: dict[str, Callable[[], None]] = {
             "-OPEN-": lambda: _open_another_folder(reader),
-            "-ZOOM-OUT-": lambda: reader.zoom(-1),
-            "-ZOOM-IN-": lambda: reader.zoom(1),
+            ZOOM_OUT_KEY: lambda: reader.zoom(-1),
+            ZOOM_IN_KEY: lambda: reader.zoom(1),
             "-FIT-": reader.fit_width,
             "-ORIGINAL-SIZE-": reader.show_original_size,
-            "-FULLSCREEN-": reader.toggle_fullscreen,
             "-SAVE-CONFIGS-": lambda: _save_current_config(reader),
         }
         while not reader.should_close:
@@ -221,5 +229,6 @@ def main(argv: list[str] | None = None) -> int:
             start_maximized=arguments.start_maximized,
             dual_page=arguments.dual_page,
             manga_reading=arguments.manga_reading,
+            expand_all=arguments.expand_all,
         )
     )

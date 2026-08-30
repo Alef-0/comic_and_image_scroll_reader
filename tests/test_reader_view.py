@@ -25,8 +25,8 @@ class FakeCanvas:
 
 class ReaderViewTests(unittest.TestCase):
     def test_status_omits_detected_spread_count(self) -> None:
-        updates: list[str] = []
-        status = SimpleNamespace(update=updates.append)
+        status_updates: list[str] = []
+        zoom_updates: list[str] = []
         reader = ComicStrip.__new__(ComicStrip)
         reader.original_size = False
         reader.strip_width = 500
@@ -34,11 +34,15 @@ class ReaderViewTests(unittest.TestCase):
         reader.folder = Path("/pictures/Chapter 1")
         reader.detect_double_spreads = True
         reader.double_spread_indices = {2, 5}
-        reader.window = {"-STATUS-": status}
+        reader.window = {
+            "-STATUS-": SimpleNamespace(update=status_updates.append),
+            "-ZOOM-STATUS-": SimpleNamespace(update=zoom_updates.append),
+        }
 
         reader._show_status()
 
-        self.assertEqual(updates, ["Chapter 1  •  50%"])
+        self.assertEqual(status_updates, ["Chapter 1"])
+        self.assertEqual(zoom_updates, ["50%"])
 
     def test_counter_uses_the_last_visible_page(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
@@ -99,8 +103,9 @@ class ReaderViewTests(unittest.TestCase):
         reader.viewport_height = 300
         reader.positions = [PagePosition(0, 0, 100, 1_000)]
         distances: list[int] = []
+        zoom_steps: list[int] = []
         reader.scroll = distances.append
-        reader.zoom = lambda _steps: None
+        reader.zoom = zoom_steps.append
         reader.toggle_fullscreen = lambda: None
         reader.request_close = lambda: None
 
@@ -109,8 +114,11 @@ class ReaderViewTests(unittest.TestCase):
         shortcuts["<End>"]()
         shortcuts["<Prior>"]()
         shortcuts["<Next>"]()
+        shortcuts["<plus>"]()
+        shortcuts["<minus>"]()
 
         self.assertEqual(distances, [-700, 700, -250, 250])
+        self.assertEqual(zoom_steps, [1, -1])
 
     def test_numlock_off_numpad_navigation_uses_keypad_symbols(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)

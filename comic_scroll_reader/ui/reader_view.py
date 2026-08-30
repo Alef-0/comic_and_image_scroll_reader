@@ -22,7 +22,12 @@ from ..core.memory import MemoryShelf
 from ..core.models import ComicPage, PagePosition
 from ..files.bookshelf import open_page
 from ..imaging.image_resizer import ImageResizer
-from .window import CANVAS_COLOR, PAGE_COUNTER_KEY, reader_window_title
+from .window import (
+    CANVAS_COLOR,
+    PAGE_COUNTER_KEY,
+    ZOOM_STATUS_KEY,
+    reader_window_title,
+)
 
 
 PhotoKey = tuple[Path, int, int]
@@ -218,6 +223,10 @@ class ComicStrip:
             "<Control-plus>": lambda: self.zoom(1),
             "<Control-equal>": lambda: self.zoom(1),
             "<Control-minus>": lambda: self.zoom(-1),
+            "<plus>": lambda: self.zoom(1),
+            "<minus>": lambda: self.zoom(-1),
+            "<KP_Add>": lambda: self.zoom(1),
+            "<KP_Subtract>": lambda: self.zoom(-1),
             "<F11>": self.toggle_fullscreen,
             "<Escape>": self.request_close,
             "<q>": self.request_close,
@@ -865,7 +874,8 @@ class ComicStrip:
             zoom = "Original"
         else:
             zoom = f"{round(100 * self.strip_width / max(1, self.viewport_width))}%"
-        self.window["-STATUS-"].update(f"{self.folder.name}  •  {zoom}")
+        self.window["-STATUS-"].update(self.folder.name)
+        self.window[ZOOM_STATUS_KEY].update(zoom)
 
     def _show_page_counter(self) -> None:
-        self.window[PAGE_COUNTER_KEY].update(value=self.page_counter_text)
+        self.window[PAGE_COUNTER_KEY].update(value=f"Pages {self.page_counter_text}")
