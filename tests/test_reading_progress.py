@@ -17,19 +17,21 @@ class ReadingProgressTests(unittest.TestCase):
             first = root / "Comic One"
             second = root / "Comic Two"
 
-            save_reading_progress(ReadingProgress(first, 3, "75"), csv_path)
-            save_reading_progress(ReadingProgress(second, 8, "original"), csv_path)
-            save_reading_progress(ReadingProgress(first, 5, "90"), csv_path)
+            save_reading_progress(ReadingProgress(first, 3), csv_path)
+            save_reading_progress(ReadingProgress(second, 8), csv_path)
+            save_reading_progress(ReadingProgress(first, 5), csv_path)
 
             self.assertEqual(
                 progress_for_folder(first, csv_path),
-                ReadingProgress(first.resolve(), 5, "90"),
+                ReadingProgress(first.resolve(), 5),
             )
             self.assertEqual(
                 progress_for_folder(second, csv_path),
-                ReadingProgress(second.resolve(), 8, "original"),
+                ReadingProgress(second.resolve(), 8),
             )
-            self.assertEqual(len(csv_path.read_text(encoding="utf-8").splitlines()), 3)
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0], "folder,last_page")
+            self.assertEqual(len(lines), 3)
 
     def test_invalid_rows_are_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_folder:

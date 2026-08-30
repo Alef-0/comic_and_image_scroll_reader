@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "manga_reading": False,
     "page_spacing": True,
     "detect_double_spreads": True,
+    "remember_folder": True,
+    "zoom_level": "75",
     "top_bar_visible": True,
     "window_geometry": "",
     "window_maximized": True,

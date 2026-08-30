@@ -8,14 +8,13 @@ from .config import CONFIG_DIRECTORY
 
 
 PROGRESS_PATH = CONFIG_DIRECTORY / "reading_progress.csv"
-FIELDNAMES = ("folder", "last_page", "zoom_level")
+FIELDNAMES = ("folder", "last_page")
 
 
 @dataclass(frozen=True)
 class ReadingProgress:
     folder: Path
     last_page: int
-    zoom_level: str
 
 
 def _folder_key(folder: Path) -> str:
@@ -30,18 +29,16 @@ def load_reading_progress(path: Path = PROGRESS_PATH) -> dict[str, ReadingProgre
             rows = csv.DictReader(progress_file)
             for row in rows:
                 folder_text = row.get("folder", "").strip()
-                zoom_level = row.get("zoom_level", "").strip()
                 try:
                     last_page = int(row.get("last_page", ""))
                 except (TypeError, ValueError):
                     continue
-                if not folder_text or last_page < 1 or not zoom_level:
+                if not folder_text or last_page < 1:
                     continue
                 folder = Path(folder_text)
                 records[_folder_key(folder)] = ReadingProgress(
                     folder=folder,
                     last_page=last_page,
-                    zoom_level=zoom_level,
                 )
     except OSError:
         return records
@@ -64,7 +61,6 @@ def save_reading_progress(
     records[key] = ReadingProgress(
         folder=Path(key),
         last_page=max(1, int(progress.last_page)),
-        zoom_level=str(progress.zoom_level),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as progress_file:
@@ -76,6 +72,5 @@ def save_reading_progress(
                 {
                     "folder": folder_key,
                     "last_page": record.last_page,
-                    "zoom_level": record.zoom_level,
                 }
             )

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from comic_scroll_reader.app import (
     _offer_to_resume,
     _save_current_progress,
+    _save_global_zoom,
     _save_top_bar_visibility,
     _save_window_state,
     read_arguments,
@@ -62,20 +63,38 @@ class ApplicationArgumentsTests(unittest.TestCase):
         )
 
     @patch("comic_scroll_reader.app.save_reading_progress")
-    def test_closing_progress_contains_only_folder_page_and_zoom(
+    def test_closing_progress_contains_only_folder_and_page(
         self, save_progress_mock
     ) -> None:
         reader = SimpleNamespace(
             folder=Path("/comics/Chapter 1"),
             current_page_number=12,
-            reading_zoom_level="90",
+            remember_folder=True,
         )
 
         _save_current_progress(reader)
 
         save_progress_mock.assert_called_once_with(
-            ReadingProgress(Path("/comics/Chapter 1"), 12, "90")
+            ReadingProgress(Path("/comics/Chapter 1"), 12)
         )
+
+    @patch("comic_scroll_reader.app.save_reading_progress")
+    def test_disabled_folder_memory_does_not_save_progress(
+        self, save_progress_mock
+    ) -> None:
+        reader = SimpleNamespace(remember_folder=False)
+
+        _save_current_progress(reader)
+
+        save_progress_mock.assert_not_called()
+
+    @patch("comic_scroll_reader.app.progress_for_folder")
+    def test_disabled_folder_memory_never_offers_to_continue(
+        self, progress_mock
+    ) -> None:
+        _offer_to_resume(SimpleNamespace(remember_folder=False))
+
+        progress_mock.assert_not_called()
 
     @patch("comic_scroll_reader.app.sg.popup_yes_no", return_value="Yes")
     @patch("comic_scroll_reader.app.progress_for_folder")
@@ -83,19 +102,18 @@ class ApplicationArgumentsTests(unittest.TestCase):
         self, progress_mock, _popup_mock
     ) -> None:
         progress_mock.return_value = ReadingProgress(
-            Path("/comics/Chapter 1"), 12, "90"
+            Path("/comics/Chapter 1"), 12
         )
-        restored: list[tuple[int, str]] = []
+        restored: list[int] = []
         reader = SimpleNamespace(
             folder=Path("/comics/Chapter 1"),
-            restore_reading_position=lambda page, zoom: restored.append(
-                (page, zoom)
-            ),
+            remember_folder=True,
+            go_to_page_number=restored.append,
         )
 
         _offer_to_resume(reader)
 
-        self.assertEqual(restored, [(12, "90")])
+        self.assertEqual(restored, [12])
 
     @patch("comic_scroll_reader.app.save_config")
     @patch("comic_scroll_reader.app.load_config")
@@ -104,7 +122,7 @@ class ApplicationArgumentsTests(unittest.TestCase):
     ) -> None:
         load_config_mock.return_value = {"dual_page": True}
 
-        _save_window_state(SimpleNamespace(), "900x700+20+30", False)
+        _save_window_state("900x700+20+30", False)
 
         save_config_mock.assert_called_once_with(
             {
@@ -112,6 +130,19 @@ class ApplicationArgumentsTests(unittest.TestCase):
                 "window_geometry": "900x700+20+30",
                 "window_maximized": False,
             }
+        )
+
+    @patch("comic_scroll_reader.app.save_config")
+    @patch("comic_scroll_reader.app.load_config")
+    def test_zoom_is_saved_globally_in_the_general_config(
+        self, load_config_mock, save_config_mock
+    ) -> None:
+        load_config_mock.return_value = {"dual_page": True}
+
+        _save_global_zoom(SimpleNamespace(reading_zoom_level="90"))
+
+        save_config_mock.assert_called_once_with(
+            {"dual_page": True, "zoom_level": "90"}
         )
 
 

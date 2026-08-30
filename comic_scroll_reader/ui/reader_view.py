@@ -79,6 +79,7 @@ class ComicStrip:
         manga_reading: bool = False,
         page_spacing: bool = True,
         detect_double_spreads: bool = True,
+        remember_folder: bool = True,
         prevent_image_upscale: bool = False,
         stop_at_fit_width: bool = True,
     ) -> None:
@@ -95,6 +96,7 @@ class ComicStrip:
         self.manga_reading = manga_reading
         self.page_spacing = page_spacing
         self.detect_double_spreads = detect_double_spreads
+        self.remember_folder = remember_folder
         self.double_spread_indices: set[int] = set()
         self.typical_page_ratio = 1.0
         self._refresh_spread_analysis()
@@ -491,8 +493,8 @@ class ComicStrip:
         self.go_to_page(page_number - 1)
         return True
 
-    def restore_reading_position(self, page_number: int, zoom_level: str) -> None:
-        """Restore a saved zoom followed by its one-based page position."""
+    def restore_zoom_level(self, zoom_level: str) -> None:
+        """Restore the global zoom shared by every folder and window."""
         self.stop_zooming()
         if zoom_level == "original":
             self.show_original_size()
@@ -512,6 +514,10 @@ class ComicStrip:
                 max(target_width, minimum), self._maximum_strip_width()
             )
             self._set_strip_width(target_width, self.viewport_height // 2)
+
+    def restore_reading_position(self, page_number: int, zoom_level: str) -> None:
+        """Restore a zoom and page pair retained for API compatibility."""
+        self.restore_zoom_level(zoom_level)
         self.go_to_page(page_number - 1)
 
     def _scrollbar_moved(
@@ -716,6 +722,7 @@ class ComicStrip:
 
     def open_bookshelf(self, pages: list[ComicPage], folder: Path) -> None:
         self.stop_zooming()
+        zoom_level = self.reading_zoom_level
         self.pages = pages
         self.folder = folder
         self.window.set_title(reader_window_title(folder))
@@ -730,6 +737,7 @@ class ComicStrip:
         self._clear_canvas()
         self._arrange_strip()
         self.paint()
+        self.restore_zoom_level(zoom_level)
         self._show_status()
 
     def stop_zooming(self) -> None:

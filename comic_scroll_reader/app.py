@@ -3,6 +3,7 @@
 import argparse
 from collections.abc import Callable
 from pathlib import Path
+import tkinter as tk
 
 import FreeSimpleGUI as sg
 
@@ -93,13 +94,14 @@ def _open_another_folder(reader: ComicStrip) -> None:
 
 
 def _save_current_progress(reader: ComicStrip) -> None:
-    """Persist only the active folder, page, and zoom in the progress CSV."""
+    """Persist only the active folder and page when remembering is enabled."""
+    if not reader.remember_folder:
+        return
     try:
         save_reading_progress(
             ReadingProgress(
                 folder=reader.folder,
                 last_page=max(1, reader.current_page_number),
-                zoom_level=reader.reading_zoom_level,
             )
         )
     except OSError as error:
@@ -108,38 +110,39 @@ def _save_current_progress(reader: ComicStrip) -> None:
 
 def _offer_to_resume(reader: ComicStrip) -> None:
     """Offer to restore a saved position whenever a folder is reopened."""
+    if not reader.remember_folder:
+        return
     progress = progress_for_folder(reader.folder)
     if progress is None:
         return
-    zoom_description = (
-        "original size"
-        if progress.zoom_level == "original"
-        else f"{progress.zoom_level}% zoom"
-    )
     answer = sg.popup_yes_no(
         (
             f"Continue reading {reader.folder.name} from page "
-            f"{progress.last_page} at {zoom_description}?"
+            f"{progress.last_page}?"
         ),
         title="Continue reading?",
     )
     if answer == "Yes":
-        reader.restore_reading_position(
-            progress.last_page, progress.zoom_level
-        )
+        reader.go_to_page_number(progress.last_page)
 
 
 def _save_current_config(reader: ComicStrip) -> None:
     config = load_config()
-    config.update({
-        "prevent_image_upscale": reader.prevent_image_upscale,
-        "stop_at_fit_width": reader.stop_at_fit_width,
-        "dual_page": reader.dual_page,
-        "manga_reading": reader.manga_reading,
-        "page_spacing": reader.page_spacing,
-        "detect_double_spreads": reader.detect_double_spreads,
-        "top_bar_visible": bool(reader.window[TOP_BAR_KEY].metadata["visible"]),
-    })
+    config.update(
+        {
+            "prevent_image_upscale": reader.prevent_image_upscale,
+            "stop_at_fit_width": reader.stop_at_fit_width,
+            "dual_page": reader.dual_page,
+            "manga_reading": reader.manga_reading,
+            "page_spacing": reader.page_spacing,
+            "detect_double_spreads": reader.detect_double_spreads,
+            "remember_folder": reader.remember_folder,
+            "zoom_level": reader.reading_zoom_level,
+            "top_bar_visible": bool(
+                reader.window[TOP_BAR_KEY].metadata["visible"]
+            ),
+        }
+    )
     try:
         save_config(config)
     except OSError as error:
@@ -160,9 +163,27 @@ def _save_top_bar_visibility(reader: ComicStrip) -> None:
         sg.popup_error(f"Unable to save the top-bar state:\n{error}")
 
 
-def _save_window_state(
-    window: sg.Window, normal_geometry: str, maximized: bool
-) -> None:
+def _save_remember_folder(reader: ComicStrip) -> None:
+    """Persist the experimental folder-memory toggle immediately."""
+    config = load_config()
+    config["remember_folder"] = reader.remember_folder
+    try:
+        save_config(config)
+    except OSError as error:
+        sg.popup_error(f"Unable to save the folder-memory option:\n{error}")
+
+
+def _save_global_zoom(reader: ComicStrip) -> None:
+    """Persist one zoom level shared by every folder and reader window."""
+    config = load_config()
+    config["zoom_level"] = reader.reading_zoom_level
+    try:
+        save_config(config)
+    except OSError as error:
+        sg.popup_error(f"Unable to save the zoom level:\n{error}")
+
+
+def _save_window_state(normal_geometry: str, maximized: bool) -> None:
     """Persist the last normal geometry and desktop maximized state."""
     config = load_config()
     config["window_geometry"] = normal_geometry
@@ -203,6 +224,7 @@ def run_reader(
         manga_reading=manga_reading,
         page_spacing=config["page_spacing"],
         detect_double_spreads=config["detect_double_spreads"],
+        remember_folder=config["remember_folder"],
         prevent_image_upscale=config["prevent_image_upscale"],
         stop_at_fit_width=config["stop_at_fit_width"],
         top_bar_visible=config["top_bar_visible"],
@@ -231,9 +253,11 @@ def run_reader(
             manga_reading=manga_reading,
             page_spacing=config["page_spacing"],
             detect_double_spreads=config["detect_double_spreads"],
+            remember_folder=config["remember_folder"],
             prevent_image_upscale=config["prevent_image_upscale"],
             stop_at_fit_width=config["stop_at_fit_width"],
         )
+        reader.restore_zoom_level(str(config["zoom_level"]))
         _offer_to_resume(reader)
         window.refresh()
         should_maximize = (
@@ -254,11 +278,14 @@ def run_reader(
         }
         while not reader.should_close:
             event, values = window.read(timeout=50)
-            maximized_on_close = is_maximized(window)
-            if not maximized_on_close:
-                normal_geometry = window.TKroot.geometry()
             if event == sg.WIN_CLOSED:
                 break
+            maximized_on_close = is_maximized(window)
+            if not maximized_on_close:
+                try:
+                    normal_geometry = window.TKroot.geometry()
+                except tk.TclError:
+                    pass
             if toggle_collapsible_group(window, event):
                 continue
             if event == TOP_BAR_TOGGLE_KEY:
@@ -292,13 +319,18 @@ def run_reader(
                     bool(values["-DETECT-DOUBLE-SPREADS-"])
                 )
                 continue
+            if event == "-REMEMBER-FOLDER-":
+                reader.remember_folder = bool(values["-REMEMBER-FOLDER-"])
+                _save_remember_folder(reader)
+                continue
             action = actions.get(event)
             if action is not None:
                 action()
     finally:
         if reader is not None:
+            _save_global_zoom(reader)
             _save_current_progress(reader)
-        _save_window_state(window, normal_geometry, maximized_on_close)
+        _save_window_state(normal_geometry, maximized_on_close)
         window.close()
     return 0
 
