@@ -1,7 +1,9 @@
-# Comic and Image Scroll Reader
+# Comic and Scroll Reader
 
 A small Python desktop app that reads a folder of images as one continuous,
-vertical strip.
+vertical strip. It supports single-page and paired-page layouts, manga order,
+double-spread detection, per-folder reading progress, and persistent window and
+toolbar state.
 
 ## Setup
 
@@ -32,7 +34,8 @@ Or open an image folder directly:
 python3 run_reader.py /path/to/comic
 ```
 
-The reader starts maximized by default. To start in a normal window instead:
+The reader restores its last window size, position, and maximized state. To
+override that saved state and start in a normal window:
 
 ```bash
 python3 run_reader.py --windowed /path/to/comic
@@ -44,6 +47,16 @@ Start with paired pages, optionally using manga (right-to-left) order:
 python3 run_reader.py --dual-page /path/to/comic
 python3 run_reader.py --dual-page --manga /path/to/comic
 ```
+
+For UI inspection, open every collapsible toolbar menu at once:
+
+```bash
+python3 run_reader.py --windowed --expand-all /path/to/comic
+```
+
+If the initially selected folder is invalid or contains no readable images,
+the error is shown and the launcher opens again. An invalid folder selected
+from an active reader leaves the current comic open.
 
 ## Build a compact binary
 
@@ -100,11 +113,15 @@ larger executable.
 python3 -m unittest discover -s tests -v
 ```
 
+## Reader controls
+
 Use the mouse wheel or arrow keys to scroll. **Page Up** and **Page Down** move
 one screen at a time, while **Home** and **End** jump to the beginning or end.
-Ctrl+wheel zooms, F11 toggles fullscreen, and Escape closes the reader. Zoom
-stops at the fitted window width by default; clear **Stop at fit width** to zoom
-farther, or enable
+Ctrl+wheel, **+**, and **-** zoom; F11 toggles fullscreen; and Escape closes the
+reader. The underlined **-**, zoom percentage, **+**, and **Pages** counter at
+the right of the toolbar are clickable. Clicking **Pages** opens a page-jump
+dialog. Zoom stops at the fitted window width by default; clear **Stop at fit
+width** to zoom farther, or enable
 **Don't enlarge images** to keep every page at or below its native width.
 **Original Size** uses each image's native dimensions, reducing only images
 that would exceed their available width while **Stop at fit width** is active.
@@ -121,10 +138,20 @@ reader to pan vertically or horizontally when an image is wider than the
 window.
 
 All page resizing uses bicubic interpolation.
-Use **Options → Save Configs** to persist the current checkbox settings. They
-are loaded automatically from
-`~/.config/comic-scroll-reader/reader_config.json`. If `XDG_CONFIG_HOME` is
-set, its value is used instead of `~/.config`.
+Use **Save Configs** to persist the current checkbox settings. Toolbar
+visibility and the last window geometry/state are saved automatically when
+they change or the reader closes. They are loaded from
+`~/.config/comic-scroll-reader/reader_config.json`; if `XDG_CONFIG_HOME` is
+set, its value replaces `~/.config`.
+
+On close, the active folder, last page, and zoom level are saved separately in
+`~/.config/comic-scroll-reader/reading_progress.csv`. Reopening that folder
+offers to restore the saved position. The CSV stores no other configuration.
+
+## Credits and license
+
+Developed by Alef-0. Vibecoded using OpenAI GPT-5.6 Codex, an agentic coding
+model. Distributed under the MIT License; see `LICENSE` for the full terms.
 
 ## Build a Debian package
 
