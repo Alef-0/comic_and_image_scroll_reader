@@ -3,7 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from comic_scroll_reader.app import _save_top_bar_visibility, read_arguments
+from comic_scroll_reader.app import (
+    _offer_to_resume,
+    _save_current_progress,
+    _save_top_bar_visibility,
+    read_arguments,
+)
+from comic_scroll_reader.reading_progress import ReadingProgress
 
 
 class ApplicationArgumentsTests(unittest.TestCase):
@@ -53,6 +59,42 @@ class ApplicationArgumentsTests(unittest.TestCase):
         save_config_mock.assert_called_once_with(
             {"dual_page": True, "top_bar_visible": False}
         )
+
+    @patch("comic_scroll_reader.app.save_reading_progress")
+    def test_closing_progress_contains_only_folder_page_and_zoom(
+        self, save_progress_mock
+    ) -> None:
+        reader = SimpleNamespace(
+            folder=Path("/comics/Chapter 1"),
+            current_page_number=12,
+            reading_zoom_level="90",
+        )
+
+        _save_current_progress(reader)
+
+        save_progress_mock.assert_called_once_with(
+            ReadingProgress(Path("/comics/Chapter 1"), 12, "90")
+        )
+
+    @patch("comic_scroll_reader.app.sg.popup_yes_no", return_value="Yes")
+    @patch("comic_scroll_reader.app.progress_for_folder")
+    def test_saved_progress_is_restored_after_confirmation(
+        self, progress_mock, _popup_mock
+    ) -> None:
+        progress_mock.return_value = ReadingProgress(
+            Path("/comics/Chapter 1"), 12, "90"
+        )
+        restored: list[tuple[int, str]] = []
+        reader = SimpleNamespace(
+            folder=Path("/comics/Chapter 1"),
+            restore_reading_position=lambda page, zoom: restored.append(
+                (page, zoom)
+            ),
+        )
+
+        _offer_to_resume(reader)
+
+        self.assertEqual(restored, [(12, "90")])
 
 
 if __name__ == "__main__":

@@ -171,6 +171,13 @@ class ComicStrip:
             return f"{last_index + 1} / {total}"
         return f"{first_index + 1}-{last_index + 1} / {total}"
 
+    @property
+    def reading_zoom_level(self) -> str:
+        """Return the displayed zoom in a compact, restorable form."""
+        if self.original_size:
+            return "original"
+        return str(round(100 * self.strip_width / max(1, self.viewport_width)))
+
     def _connect_controls(self) -> None:
         self.canvas.bind("<MouseWheel>", self._wheel_moved)
         self.canvas.bind("<Button-4>", self._wheel_moved)
@@ -483,6 +490,29 @@ class ComicStrip:
             return False
         self.go_to_page(page_number - 1)
         return True
+
+    def restore_reading_position(self, page_number: int, zoom_level: str) -> None:
+        """Restore a saved zoom followed by its one-based page position."""
+        self.stop_zooming()
+        if zoom_level == "original":
+            self.show_original_size()
+        else:
+            try:
+                percentage = max(1, int(zoom_level))
+            except (TypeError, ValueError):
+                percentage = round(
+                    100 * self.strip_width / max(1, self.viewport_width)
+                )
+            minimum = min(
+                self._maximum_strip_width(),
+                max(1, round(self.desktop_width * self.MIN_WIDTH_RATIO)),
+            )
+            target_width = round(self.viewport_width * percentage / 100)
+            target_width = min(
+                max(target_width, minimum), self._maximum_strip_width()
+            )
+            self._set_strip_width(target_width, self.viewport_height // 2)
+        self.go_to_page(page_number - 1)
 
     def _scrollbar_moved(
         self, action: str, amount: str, unit: str | None = None

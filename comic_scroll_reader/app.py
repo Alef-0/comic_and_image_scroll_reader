@@ -8,6 +8,11 @@ import FreeSimpleGUI as sg
 
 from .config import CONFIG_PATH, load_config, save_config
 from .files.bookshelf import scan_bookshelf
+from .reading_progress import (
+    ReadingProgress,
+    progress_for_folder,
+    save_reading_progress,
+)
 from .ui.launcher import run_launcher
 from .ui.reader_view import ComicStrip
 from .ui.window import (
@@ -77,9 +82,48 @@ def _open_another_folder(reader: ComicStrip) -> None:
         return
     pages = scan_bookshelf(selected) if selected.is_dir() else []
     if pages:
+        _save_current_progress(reader)
         reader.open_bookshelf(pages, selected)
+        _offer_to_resume(reader)
     else:
         sg.popup_error(f"No readable supported images were found in:\n{selected}")
+
+
+def _save_current_progress(reader: ComicStrip) -> None:
+    """Persist only the active folder, page, and zoom in the progress CSV."""
+    try:
+        save_reading_progress(
+            ReadingProgress(
+                folder=reader.folder,
+                last_page=max(1, reader.current_page_number),
+                zoom_level=reader.reading_zoom_level,
+            )
+        )
+    except OSError as error:
+        sg.popup_error(f"Unable to save reading progress:\n{error}")
+
+
+def _offer_to_resume(reader: ComicStrip) -> None:
+    """Offer to restore a saved position whenever a folder is reopened."""
+    progress = progress_for_folder(reader.folder)
+    if progress is None:
+        return
+    zoom_description = (
+        "original size"
+        if progress.zoom_level == "original"
+        else f"{progress.zoom_level}% zoom"
+    )
+    answer = sg.popup_yes_no(
+        (
+            f"Continue reading {reader.folder.name} from page "
+            f"{progress.last_page} at {zoom_description}?"
+        ),
+        title="Continue reading?",
+    )
+    if answer == "Yes":
+        reader.restore_reading_position(
+            progress.last_page, progress.zoom_level
+        )
 
 
 def _save_current_config(reader: ComicStrip) -> None:
@@ -144,6 +188,7 @@ def run_reader(
         expand_all=expand_all,
         title=reader_window_title(folder),
     )
+    reader: ComicStrip | None = None
     try:
         # Establish and paint a useful normal-window geometry first. Besides
         # making page one visible immediately, this gives the window manager a
@@ -161,6 +206,7 @@ def run_reader(
             prevent_image_upscale=config["prevent_image_upscale"],
             stop_at_fit_width=config["stop_at_fit_width"],
         )
+        _offer_to_resume(reader)
         window.refresh()
         if start_maximized:
             maximize(window)
@@ -214,6 +260,8 @@ def run_reader(
             if action is not None:
                 action()
     finally:
+        if reader is not None:
+            _save_current_progress(reader)
         window.close()
     return 0
 

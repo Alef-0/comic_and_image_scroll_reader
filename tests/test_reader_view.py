@@ -98,6 +98,32 @@ class ReaderViewTests(unittest.TestCase):
         self.assertFalse(reader.go_to_page_number("three"))
         self.assertEqual(destinations, [2])
 
+    def test_saved_zoom_uses_percentage_or_original_mode(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.original_size = False
+        reader.strip_width = 450
+        reader.viewport_width = 600
+
+        self.assertEqual(reader.reading_zoom_level, "75")
+
+        reader.original_size = True
+        self.assertEqual(reader.reading_zoom_level, "original")
+
+    def test_restoring_progress_applies_zoom_before_page(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 800
+        reader.viewport_height = 600
+        reader.desktop_width = 1_000
+        reader.stop_zooming = lambda: None
+        reader._maximum_strip_width = lambda: 1_200
+        actions: list[tuple[str, int]] = []
+        reader._set_strip_width = lambda width, _anchor: actions.append(("zoom", width))
+        reader.go_to_page = lambda index: actions.append(("page", index))
+
+        reader.restore_reading_position(6, "75")
+
+        self.assertEqual(actions, [("zoom", 600), ("page", 5)])
+
     def test_navigation_keys_move_to_ends_and_by_one_screen(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.viewport_height = 300
