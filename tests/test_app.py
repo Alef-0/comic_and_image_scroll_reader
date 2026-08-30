@@ -7,16 +7,17 @@ from comic_scroll_reader.app import (
     _offer_to_resume,
     _save_current_progress,
     _save_top_bar_visibility,
+    _save_window_state,
     read_arguments,
 )
 from comic_scroll_reader.reading_progress import ReadingProgress
 
 
 class ApplicationArgumentsTests(unittest.TestCase):
-    def test_reader_starts_maximized_by_default(self) -> None:
+    def test_reader_uses_saved_window_state_by_default(self) -> None:
         arguments = read_arguments(["pages"])
 
-        self.assertTrue(arguments.start_maximized)
+        self.assertIsNone(arguments.start_maximized)
         self.assertEqual(arguments.folder, Path("pages"))
 
     def test_windowed_flag_disables_startup_maximization(self) -> None:
@@ -95,6 +96,23 @@ class ApplicationArgumentsTests(unittest.TestCase):
         _offer_to_resume(reader)
 
         self.assertEqual(restored, [(12, "90")])
+
+    @patch("comic_scroll_reader.app.save_config")
+    @patch("comic_scroll_reader.app.load_config")
+    def test_window_state_updates_geometry_and_maximized_status(
+        self, load_config_mock, save_config_mock
+    ) -> None:
+        load_config_mock.return_value = {"dual_page": True}
+
+        _save_window_state(SimpleNamespace(), "900x700+20+30", False)
+
+        save_config_mock.assert_called_once_with(
+            {
+                "dual_page": True,
+                "window_geometry": "900x700+20+30",
+                "window_maximized": False,
+            }
+        )
 
 
 if __name__ == "__main__":

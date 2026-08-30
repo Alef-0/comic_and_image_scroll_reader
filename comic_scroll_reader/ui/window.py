@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tkinter as tk
@@ -100,6 +101,25 @@ def windowed_size(desktop_width: int, desktop_height: int) -> tuple[int, int]:
         max(1, round(desktop_width * width_ratio)),
         max(1, round(desktop_height * height_ratio)),
     )
+
+
+def size_from_geometry(geometry: object) -> tuple[int, int] | None:
+    """Extract a usable width and height from Tk's saved geometry string."""
+    if not isinstance(geometry, str):
+        return None
+    match = re.fullmatch(r"(\d+)x(\d+)[+-]\d+[+-]\d+", geometry)
+    if match is None:
+        return None
+    width, height = (int(value) for value in match.groups())
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def is_maximized(window: sg.Window) -> bool:
+    """Return whether the desktop window manager reports a maximized window."""
+    try:
+        return bool(window.TKroot.attributes("-zoomed"))
+    except tk.TclError:
+        return window.TKroot.state() == "zoomed"
 
 
 def reader_window_title(folder: Path) -> str:

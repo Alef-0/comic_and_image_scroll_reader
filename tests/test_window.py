@@ -5,6 +5,7 @@ from comic_scroll_reader.ui.window import (
     TOP_BAR_KEY,
     TOP_BAR_TOGGLE_KEY,
     reader_window_title,
+    size_from_geometry,
     toggle_collapsible_group,
     toggle_top_bar,
 )
@@ -35,6 +36,10 @@ class FakeWindow(dict):
 
 
 class WindowControlTests(unittest.TestCase):
+    def test_saved_geometry_restores_its_window_size(self) -> None:
+        self.assertEqual(size_from_geometry("900x700+20-30"), (900, 700))
+        self.assertIsNone(size_from_geometry("not geometry"))
+
     def test_reader_title_identifies_the_active_folder(self) -> None:
         self.assertEqual(
             reader_window_title(Path("/comics/Chapter 12")),

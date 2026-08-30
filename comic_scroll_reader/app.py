@@ -20,6 +20,7 @@ from .ui.window import (
     ask_for_bookshelf,
     build_reader_window,
     desktop_size,
+    is_maximized,
     maximize,
     PAGE_COUNTER_KEY,
     TOP_BAR_TOGGLE_KEY,
@@ -27,6 +28,7 @@ from .ui.window import (
     ZOOM_IN_KEY,
     ZOOM_OUT_KEY,
     reader_window_title,
+    size_from_geometry,
     toggle_collapsible_group,
     toggle_top_bar,
     windowed_size,
@@ -49,6 +51,7 @@ def read_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--not-maximized",
         action="store_false",
         dest="start_maximized",
+        default=None,
         help="open in a normal window instead of starting maximized",
     )
     parser.add_argument(
@@ -127,7 +130,8 @@ def _offer_to_resume(reader: ComicStrip) -> None:
 
 
 def _save_current_config(reader: ComicStrip) -> None:
-    config = {
+    config = load_config()
+    config.update({
         "prevent_image_upscale": reader.prevent_image_upscale,
         "stop_at_fit_width": reader.stop_at_fit_width,
         "dual_page": reader.dual_page,
@@ -135,7 +139,7 @@ def _save_current_config(reader: ComicStrip) -> None:
         "page_spacing": reader.page_spacing,
         "detect_double_spreads": reader.detect_double_spreads,
         "top_bar_visible": bool(reader.window[TOP_BAR_KEY].metadata["visible"]),
-    }
+    })
     try:
         save_config(config)
     except OSError as error:
@@ -156,10 +160,23 @@ def _save_top_bar_visibility(reader: ComicStrip) -> None:
         sg.popup_error(f"Unable to save the top-bar state:\n{error}")
 
 
+def _save_window_state(
+    window: sg.Window, normal_geometry: str, maximized: bool
+) -> None:
+    """Persist the last normal geometry and desktop maximized state."""
+    config = load_config()
+    config["window_geometry"] = normal_geometry
+    config["window_maximized"] = maximized
+    try:
+        save_config(config)
+    except OSError as error:
+        sg.popup_error(f"Unable to save the window state:\n{error}")
+
+
 def run_reader(
     folder: Path,
     *,
-    start_maximized: bool = True,
+    start_maximized: bool | None = None,
     dual_page: bool = False,
     manga_reading: bool = False,
     expand_all: bool = False,
@@ -176,8 +193,12 @@ def run_reader(
     dual_page = dual_page or config["dual_page"]
     manga_reading = manga_reading or config["manga_reading"]
     screen_width, screen_height = desktop_size()
+    saved_geometry = config["window_geometry"]
+    initial_size = size_from_geometry(saved_geometry) or windowed_size(
+        screen_width, screen_height
+    )
     window = build_reader_window(
-        windowed_size(screen_width, screen_height),
+        initial_size,
         dual_page=dual_page,
         manga_reading=manga_reading,
         page_spacing=config["page_spacing"],
@@ -189,11 +210,18 @@ def run_reader(
         title=reader_window_title(folder),
     )
     reader: ComicStrip | None = None
+    normal_geometry = str(saved_geometry) if size_from_geometry(saved_geometry) else ""
+    maximized_on_close = False
     try:
         # Establish and paint a useful normal-window geometry first. Besides
         # making page one visible immediately, this gives the window manager a
         # real geometry to restore when the user leaves the maximized state.
         window.refresh()
+        if normal_geometry:
+            window.TKroot.geometry(normal_geometry)
+            window.refresh()
+        else:
+            normal_geometry = window.TKroot.geometry()
         reader = ComicStrip(
             window,
             pages,
@@ -208,7 +236,12 @@ def run_reader(
         )
         _offer_to_resume(reader)
         window.refresh()
-        if start_maximized:
+        should_maximize = (
+            bool(config["window_maximized"])
+            if start_maximized is None
+            else start_maximized
+        )
+        if should_maximize:
             maximize(window)
             window.refresh()
         actions: dict[str, Callable[[], None]] = {
@@ -221,6 +254,9 @@ def run_reader(
         }
         while not reader.should_close:
             event, values = window.read(timeout=50)
+            maximized_on_close = is_maximized(window)
+            if not maximized_on_close:
+                normal_geometry = window.TKroot.geometry()
             if event == sg.WIN_CLOSED:
                 break
             if toggle_collapsible_group(window, event):
@@ -262,6 +298,7 @@ def run_reader(
     finally:
         if reader is not None:
             _save_current_progress(reader)
+        _save_window_state(window, normal_geometry, maximized_on_close)
         window.close()
     return 0
 
@@ -269,14 +306,15 @@ def run_reader(
 def main(argv: list[str] | None = None) -> int:
     arguments = read_arguments(argv)
     folder = arguments.folder.expanduser() if arguments.folder else run_launcher()
-    return (
-        0
-        if folder is None
-        else run_reader(
+    while folder is not None:
+        result = run_reader(
             folder,
             start_maximized=arguments.start_maximized,
             dual_page=arguments.dual_page,
             manga_reading=arguments.manga_reading,
             expand_all=arguments.expand_all,
         )
-    )
+        if result == 0:
+            return 0
+        folder = run_launcher()
+    return 0

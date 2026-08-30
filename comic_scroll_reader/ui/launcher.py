@@ -32,8 +32,8 @@ CONFIG_LABELS = {
 
 
 def config_from_values(
-    values: dict[str, object], current: dict[str, bool] | None = None
-) -> dict[str, bool]:
+    values: dict[str, object], current: dict[str, object] | None = None
+) -> dict[str, object]:
     """Update launcher-editable settings while preserving hidden settings."""
     config = (current or DEFAULT_CONFIG).copy()
     for name, element_key in CONFIG_KEYS.items():
@@ -71,13 +71,13 @@ def _enable_folder_drop(window: sg.Window) -> bool:
     return True
 
 
-def build_launcher_window(config: dict[str, bool]) -> sg.Window:
+def build_launcher_window(config: dict[str, object]) -> sg.Window:
     """Construct the logo, folder target, and basic configuration controls."""
     sg.theme("DarkGrey13")
     checkboxes = [
         sg.Checkbox(
             CONFIG_LABELS[name],
-            default=config[name],
+            default=bool(config[name]),
             key=CONFIG_KEYS[name],
             pad=((8, 12), (4, 4)),
         )

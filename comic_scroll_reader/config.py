@@ -17,11 +17,13 @@ DEFAULT_CONFIG = {
     "page_spacing": True,
     "detect_double_spreads": True,
     "top_bar_visible": True,
+    "window_geometry": "",
+    "window_maximized": True,
 }
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict[str, bool]:
-    """Load known boolean preferences, falling back safely for invalid files."""
+def load_config(path: Path = CONFIG_PATH) -> dict[str, object]:
+    """Load recognized preferences and window state with safe type checks."""
     config = DEFAULT_CONFIG.copy()
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
@@ -31,16 +33,16 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, bool]:
         return config
     for key, default in DEFAULT_CONFIG.items():
         value = saved.get(key, default)
-        if isinstance(value, bool):
+        if isinstance(value, type(default)):
             config[key] = value
     return config
 
 
-def save_config(config: dict[str, bool], path: Path = CONFIG_PATH) -> None:
-    """Save only recognized boolean preferences in a stable JSON format."""
+def save_config(config: dict[str, object], path: Path = CONFIG_PATH) -> None:
+    """Save only recognized preferences and window state in stable JSON."""
     saved = {
         key: config.get(key, default)
-        if isinstance(config.get(key, default), bool)
+        if isinstance(config.get(key, default), type(default))
         else default
         for key, default in DEFAULT_CONFIG.items()
     }
