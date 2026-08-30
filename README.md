@@ -93,6 +93,58 @@ python3 run_reader.py --dual-page /path/to/comic
 python3 run_reader.py --dual-page --manga /path/to/comic
 ```
 
+## Build a standalone binary
+
+Run these commands from the project directory. They create an isolated Python
+environment, install the application and compiler dependencies, and build the
+standalone program:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install nuitka ordered-set zstandard
+chmod +x build_binary.sh
+./build_binary.sh .venv/bin/python
+
+# Note if you have compiled opencv
+python -m pip install --force-reinstall \
+  ~/opencv-python/wheelhouse/numpy-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+
+python -m pip install --force-reinstall --no-deps \
+  ~/opencv-python/wheelhouse/opencv_python-4.14.0.94-cp312-cp312-linux_x86_64.whl
+```
+
+The build can take several minutes. When it finishes, start the compiled
+program with:
+
+```bash
+./run_reader.dist/comic-scroll-reader
+```
+
+To open an image folder directly, pass its path after the command:
+
+```bash
+./run_reader.dist/comic-scroll-reader /path/to/comic
+```
+
+OpenCV is optional. Without it, the binary uses the Pillow CPU fallback. To
+build with a custom CUDA-enabled OpenCV, install or expose that `cv2` build in
+the virtual environment before running `build_binary.sh`, following the custom
+OpenCV instructions above. To avoid copying the large native OpenCV library
+into the standalone directory, pass its existing location explicitly:
+
+```bash
+./build_binary.sh \
+  --external-opencv /home/alef/opencv-python/_skbuild/linux-x86_64-3.12/cmake-build/lib/python3/cv2.abi3.so \
+  .venv/bin/python
+```
+
+The resulting binary depends on that exact external file and is therefore not
+portable to another machine. A build without `--external-opencv` remains
+self-contained.
+
 ## Tests
 
 ```bash
