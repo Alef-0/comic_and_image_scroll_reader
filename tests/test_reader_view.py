@@ -232,7 +232,7 @@ class ReaderViewTests(unittest.TestCase):
         shortcuts["<KP_Left>"]()
         shortcuts["<KP_Right>"]()
 
-        self.assertEqual(distances, [-120, 120])
+        self.assertEqual(distances, [-reader.WHEEL_STEP, reader.WHEEL_STEP])
         self.assertEqual(reader.pan_x, 0)
         self.assertNotIn("<KP_8>", shortcuts)
         self.assertNotIn("<KP_4>", shortcuts)
@@ -468,16 +468,120 @@ class ReaderViewTests(unittest.TestCase):
         reader.scroll_y = 5_000
         reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
         reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.HORIZONTAL_REGION_OVERSCAN = ComicStrip.HORIZONTAL_REGION_OVERSCAN
+        reader.VERTICAL_REGION_OVERSCAN = ComicStrip.VERTICAL_REGION_OVERSCAN
         page = ComicPage(Path("page.webp"), 4_970, 6_992)
         position = PagePosition(-1_440, 0, 3_840, 5_402)
 
         key = reader._region_key(page, position)
 
         self.assertIsNotNone(key)
-        maximum_extra = 2 * reader.REGION_OVERSCAN + reader.REGION_GRANULARITY - 1
-        self.assertLessEqual(key[5], 960 + maximum_extra)
-        self.assertLessEqual(key[6], 1_006 + maximum_extra)
-        self.assertLess(key[5] * key[6] * 4, 7 * 1024 * 1024)
+        horizontal_extra = (
+            2 * max(reader.HORIZONTAL_REGION_OVERSCAN, reader.viewport_width)
+            + reader.REGION_GRANULARITY
+            - 1
+        )
+        vertical_extra = (
+            2 * max(reader.VERTICAL_REGION_OVERSCAN, reader.viewport_height)
+            + reader.REGION_GRANULARITY
+            - 1
+        )
+        self.assertGreaterEqual(key[5], 3 * reader.viewport_width)
+        self.assertLessEqual(key[5], 960 + horizontal_extra)
+        self.assertGreaterEqual(key[6], 3 * reader.viewport_height)
+        self.assertLessEqual(key[6], 1_006 + vertical_extra)
+        self.assertLess(key[5] * key[6] * 4, 38 * 1024 * 1024)
+
+    def test_vertical_overscan_keeps_five_tick_scroll_sharp(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 1_000
+        reader.viewport_height = 1_000
+        reader.pan_x = 0
+        reader.scroll_y = 5_000
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.HORIZONTAL_REGION_OVERSCAN = ComicStrip.HORIZONTAL_REGION_OVERSCAN
+        reader.VERTICAL_REGION_OVERSCAN = ComicStrip.VERTICAL_REGION_OVERSCAN
+        page = ComicPage(Path("large-page.webp"), 2_000, 20_000)
+        position = PagePosition(0, 0, 1_000, 10_000)
+
+        rendered_region = reader._region_key(page, position)
+        reader.scroll_y += 5 * reader.WHEEL_STEP
+
+        self.assertTrue(
+            reader._region_covers_visible_area(rendered_region, position)
+        )
+
+    def test_horizontal_overscan_keeps_five_tick_pan_sharp(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 1_000
+        reader.viewport_height = 1_000
+        reader.pan_x = -2_000
+        reader.scroll_y = 0
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.HORIZONTAL_REGION_OVERSCAN = ComicStrip.HORIZONTAL_REGION_OVERSCAN
+        reader.VERTICAL_REGION_OVERSCAN = ComicStrip.VERTICAL_REGION_OVERSCAN
+        page = ComicPage(Path("wide-page.webp"), 10_000, 2_000)
+        position = PagePosition(0, 0, 10_000, 2_000)
+
+        rendered_region = reader._region_key(page, position)
+        reader.pan_x += 5 * reader.WHEEL_STEP
+
+        self.assertTrue(
+            reader._region_covers_visible_area(rendered_region, position)
+        )
+
+    def test_horizontal_overscan_keeps_double_page_spread_sharp_when_panning(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 1_000
+        reader.viewport_height = 1_000
+        reader.pan_x = 0
+        reader.scroll_y = 0
+        reader.dual_page = True
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.HORIZONTAL_REGION_OVERSCAN = ComicStrip.HORIZONTAL_REGION_OVERSCAN
+        reader.VERTICAL_REGION_OVERSCAN = ComicStrip.VERTICAL_REGION_OVERSCAN
+
+        left_page = ComicPage(Path("left.webp"), 1_200, 1_800)
+        right_page = ComicPage(Path("right.webp"), 1_200, 1_800)
+        left_pos = PagePosition(-300, 0, 800, 1_200)
+        right_pos = PagePosition(512, 0, 800, 1_200)
+
+        left_region = reader._region_key(left_page, left_pos)
+        right_region = reader._region_key(right_page, right_pos)
+
+        self.assertIsNotNone(left_region)
+        self.assertIsNotNone(right_region)
+
+        # Pan left so that left page is fully on screen
+        reader.pan_x = 300
+        self.assertTrue(reader._region_covers_visible_area(left_region, left_pos))
+
+        # Pan right so that right page is fully on screen
+        reader.pan_x = -512
+        self.assertTrue(reader._region_covers_visible_area(right_region, right_pos))
+
+    def test_double_page_mode_renders_offscreen_page_in_spread(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 1_000
+        reader.viewport_height = 1_000
+        reader.pan_x = -600
+        reader.scroll_y = 0
+        reader.dual_page = True
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.HORIZONTAL_REGION_OVERSCAN = ComicStrip.HORIZONTAL_REGION_OVERSCAN
+        reader.VERTICAL_REGION_OVERSCAN = ComicStrip.VERTICAL_REGION_OVERSCAN
+
+        left_page = ComicPage(Path("left.webp"), 1_200, 1_800)
+        left_pos = PagePosition(-300, 0, 800, 1_200)
+        left_region = reader._region_key(left_page, left_pos)
+
+        self.assertIsNotNone(left_region)
+        reader.pan_x = 0
+        self.assertTrue(reader._region_covers_visible_area(left_region, left_pos))
 
     def test_paint_dispatches_cold_pages_to_async_renderer(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
@@ -498,6 +602,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.pan_x = 0
         reader.REGION_GRANULARITY = 128
         reader.REGION_OVERSCAN = 128
+        reader.HORIZONTAL_REGION_OVERSCAN = 128
+        reader.VERTICAL_REGION_OVERSCAN = 128
         reader.PRELOAD_DISTANCE = 1
         reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
         reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
@@ -591,6 +697,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.pan_x = 0
         reader.REGION_GRANULARITY = 128
         reader.REGION_OVERSCAN = 128
+        reader.HORIZONTAL_REGION_OVERSCAN = 128
+        reader.VERTICAL_REGION_OVERSCAN = 128
         reader.PRELOAD_DISTANCE = 1
         reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
         reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
@@ -670,7 +778,7 @@ class ReaderViewTests(unittest.TestCase):
         self.assertEqual(submitted, [])
         self.assertIsNone(reader._async_poll_job)
 
-    def test_scroll_retains_overlapping_crisp_region_until_replacement(self) -> None:
+    def test_scroll_retains_crisp_region_while_it_covers_viewport(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
 
         reader = ComicStrip.__new__(ComicStrip)
@@ -687,6 +795,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.pan_x = 0
         reader.REGION_GRANULARITY = 128
         reader.REGION_OVERSCAN = 128
+        reader.HORIZONTAL_REGION_OVERSCAN = 128
+        reader.VERTICAL_REGION_OVERSCAN = 128
         reader.PRELOAD_DISTANCE = 1
         reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
         reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
@@ -716,16 +826,80 @@ class ReaderViewTests(unittest.TestCase):
             cancel_all=lambda: None,
         )
 
-        reader.scroll_y = 300
+        reader.scroll_y = 350
         new_key = reader._region_key(page, position)
         self.assertNotEqual(old_key, new_key)
-        self.assertTrue(reader._regions_overlap_at_same_scale(old_key, new_key))
+        self.assertTrue(reader._region_covers_visible_area(old_key, position))
 
         reader.paint()
 
         self.assertEqual(created_images, [])
         self.assertEqual(reader.canvas_pages[page_file][2], old_key)
         self.assertNotIn(page_file, reader._preview_pages)
+        self.assertEqual(submitted[0]["region_key"], new_key)
+
+    def test_scroll_uses_preview_before_old_region_exposes_bottom_gap(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        created_images = []
+        reader.canvas.create_image = (
+            lambda *args, **kwargs: created_images.append((args, kwargs)) or 2
+        )
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.HORIZONTAL_REGION_OVERSCAN = 128
+        reader.VERTICAL_REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.canvas_zones = {}
+        reader.page_thumbnails = {}
+        reader._preview_pages = set()
+        reader._failed_regions = {}
+        reader._render_generation = 1
+        reader._async_poll_job = None
+        reader._render_job = None
+        reader._preload_job = None
+        reader._pending_render_indices = []
+        reader._pending_preload_indices = []
+
+        page_file = Path("tall-page.png")
+        page = ComicPage(page_file, 100, 1000)
+        position = PagePosition(0, 0, 100, 1000)
+        reader.pages = [page]
+        reader.positions = [position]
+        old_key = reader._region_key(page, position)
+        reader.canvas_pages = {page_file: (1, object(), old_key)}
+        preview_photo = object()
+        reader._get_blurred_preview_photo = lambda _page, _key: preview_photo
+
+        submitted = []
+        reader.async_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted.append(kwargs) or True,
+            has_pending_work=True,
+            cancel_all=lambda: None,
+        )
+
+        # The old crop ends at y=640. At this position, the viewport reaches
+        # y=700, so retaining it would expose a 60-pixel black strip below it.
+        reader.scroll_y = 500
+        new_key = reader._region_key(page, position)
+        self.assertFalse(reader._region_covers_visible_area(old_key, position))
+
+        reader.paint()
+
+        self.assertEqual(len(created_images), 1)
+        self.assertIs(created_images[0][1]["image"], preview_photo)
+        self.assertEqual(reader.canvas_pages[page_file][2], new_key)
+        self.assertIn(page_file, reader._preview_pages)
         self.assertEqual(submitted[0]["region_key"], new_key)
 
     def test_identical_blurred_preview_is_reused_during_fast_scroll(self) -> None:
@@ -745,6 +919,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.pan_x = 0
         reader.REGION_GRANULARITY = 128
         reader.REGION_OVERSCAN = 128
+        reader.HORIZONTAL_REGION_OVERSCAN = 128
+        reader.VERTICAL_REGION_OVERSCAN = 128
         reader.PRELOAD_DISTANCE = 1
         reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
         reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
@@ -803,6 +979,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.pan_x = 0
         reader.REGION_GRANULARITY = 128
         reader.REGION_OVERSCAN = 128
+        reader.HORIZONTAL_REGION_OVERSCAN = 128
+        reader.VERTICAL_REGION_OVERSCAN = 128
         reader.PRELOAD_DISTANCE = 1
         reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
         reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)

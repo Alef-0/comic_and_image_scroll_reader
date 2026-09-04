@@ -59,9 +59,9 @@ class ComicStrip:
     ZOOM_FACTOR = 1.10
     ZOOM_STEP_DELAY_MS = 1
     ZOOM_IDLE_DELAY_MS = 400
-    WHEEL_STEP = 120
-    DRAWN_CACHE_BYTES = 24 * 1024 * 1024
-    PHOTO_CACHE_BYTES = 32 * 1024 * 1024
+    WHEEL_STEP = 60
+    DRAWN_CACHE_BYTES = 64 * 1024 * 1024
+    PHOTO_CACHE_BYTES = 128 * 1024 * 1024
     IMMEDIATE_RENDER_COUNT = 2
     RENDER_STEP_DELAY_MS = 1
     PRELOAD_DELAY_MS = 150
@@ -69,6 +69,8 @@ class ComicStrip:
     PRELOAD_DISTANCE = 3
     REGION_GRANULARITY = 128
     REGION_OVERSCAN = 128
+    HORIZONTAL_REGION_OVERSCAN = 6 * REGION_GRANULARITY
+    VERTICAL_REGION_OVERSCAN = 6 * REGION_GRANULARITY
     MAX_RENDER_ATTEMPTS = 3
     MEMORY_TRIM_DELAY_MS = 250
     CONTROL_MASK = 0x0004
@@ -471,9 +473,11 @@ class ComicStrip:
         visible_end: int,
         page_size: int,
         viewport_size: int,
+        overscan: int | None = None,
     ) -> tuple[int, int]:
         granularity = self.REGION_GRANULARITY
-        desired_span = viewport_size + 2 * self.REGION_OVERSCAN
+        margin = self.REGION_OVERSCAN if overscan is None else max(0, overscan)
+        desired_span = viewport_size + 2 * margin
         rounded_span = (
             (desired_span + granularity - 1) // granularity
         ) * granularity
@@ -496,11 +500,26 @@ class ComicStrip:
         *,
         vertical_edge: str | None = None,
     ) -> RegionKey | None:
+        horizontal_overscan = max(
+            getattr(self, "HORIZONTAL_REGION_OVERSCAN", self.REGION_OVERSCAN),
+            2 * self.viewport_width if getattr(self, "dual_page", False) else self.viewport_width,
+        )
         screen_x = position.x + self.pan_x
-        visible_left = max(0, -screen_x)
-        visible_right = min(position.width, self.viewport_width - screen_x)
-        if visible_right <= visible_left:
+        if (
+            screen_x + position.width <= -horizontal_overscan
+            or screen_x >= self.viewport_width + horizontal_overscan
+        ):
             return None
+
+        if screen_x < self.viewport_width and screen_x + position.width > 0:
+            visible_left = max(0, -screen_x)
+            visible_right = min(position.width, self.viewport_width - screen_x)
+        elif screen_x >= self.viewport_width:
+            visible_left = 0
+            visible_right = min(position.width, self.viewport_width)
+        else:
+            visible_left = max(0, position.width - self.viewport_width)
+            visible_right = position.width
 
         if vertical_edge == "top":
             visible_top = 0
@@ -516,10 +535,22 @@ class ComicStrip:
                 return None
 
         left, region_width = self._region_axis(
-            visible_left, visible_right, position.width, self.viewport_width
+            visible_left,
+            visible_right,
+            position.width,
+            self.viewport_width,
+            horizontal_overscan,
+        )
+        vertical_overscan = max(
+            getattr(self, "VERTICAL_REGION_OVERSCAN", self.REGION_OVERSCAN),
+            self.viewport_height,
         )
         top, region_height = self._region_axis(
-            visible_top, visible_bottom, position.height, self.viewport_height
+            visible_top,
+            visible_bottom,
+            position.height,
+            self.viewport_height,
+            vertical_overscan,
         )
         return (
             page.file,
@@ -545,18 +576,28 @@ class ComicStrip:
             (top + height) * scale_y,
         )
 
-    @staticmethod
-    def _regions_overlap_at_same_scale(first: RegionKey, second: RegionKey) -> bool:
-        """Return whether two aligned viewport crops share visible page pixels."""
-        if first[0] != second[0] or first[1:3] != second[1:3]:
+    def _region_covers_visible_area(
+        self, region: RegionKey, position: PagePosition
+    ) -> bool:
+        """Return whether a rendered crop covers the page area now on screen."""
+        if region[1:3] != (position.width, position.height):
             return False
-        first_left, first_top, first_width, first_height = first[3:]
-        second_left, second_top, second_width, second_height = second[3:]
+
+        screen_x = position.x + self.pan_x
+        screen_y = position.y - self.scroll_y
+        visible_left = max(0, -screen_x)
+        visible_top = max(0, -screen_y)
+        visible_right = min(position.width, self.viewport_width - screen_x)
+        visible_bottom = min(position.height, self.viewport_height - screen_y)
+        if visible_right <= visible_left or visible_bottom <= visible_top:
+            return False
+
+        left, top, width, height = region[3:]
         return (
-            max(first_left, second_left)
-            < min(first_left + first_width, second_left + second_width)
-            and max(first_top, second_top)
-            < min(first_top + first_height, second_top + second_height)
+            left <= visible_left
+            and top <= visible_top
+            and left + width >= visible_right
+            and top + height >= visible_bottom
         )
 
     def _render_region(self, page: ComicPage, key: RegionKey) -> Image.Image | None:
@@ -1190,10 +1231,10 @@ class ComicStrip:
             elif (
                 existing is not None
                 and page.file not in self._preview_pages
-                and self._regions_overlap_at_same_scale(existing[2], region_key)
+                and self._region_covers_visible_area(existing[2], position)
             ):
-                # During scrolling or panning, retain the correctly scaled sharp
-                # overlap until the newly exposed region finishes rendering.
+                # Retain the correctly scaled sharp crop only while it covers
+                # everything visible; otherwise a full preview prevents gaps.
                 old_region = existing[2]
                 self.canvas.coords(
                     existing[0],
