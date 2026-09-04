@@ -146,6 +146,19 @@ class BookshelfTests(unittest.TestCase):
             # Zero target dimension
             self.assertIsNone(render_page_region(file, (0.0, 0.0, 50.0, 50.0), (0, 50)))
 
+    def test_get_page_thumbnail_image_file(self) -> None:
+        from comic_scroll_reader.files.bookshelf import get_page_thumbnail
+
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "thumb_test.jpg"
+            Image.new("RGB", (600, 800), "blue").save(file)
+
+            thumb = get_page_thumbnail(file, (150, 200))
+            self.assertIsNotNone(thumb)
+            self.assertLessEqual(thumb.width, 150)
+            self.assertLessEqual(thumb.height, 200)
+            thumb.close()
+
 
 if __name__ == "__main__":
     unittest.main()

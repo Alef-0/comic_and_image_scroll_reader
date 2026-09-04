@@ -20,6 +20,10 @@ _REGION_PROVIDERS: dict[
     Path,
     Callable[[tuple[float, float, float, float], tuple[int, int]], Image.Image | None],
 ] = {}
+_THUMBNAIL_PROVIDERS: dict[
+    Path,
+    Callable[[tuple[int, int]], Image.Image | None],
+] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -29,12 +33,15 @@ def register_page_provider(
     region_provider: Callable[
         [tuple[float, float, float, float], tuple[int, int]], Image.Image | None
     ],
+    thumbnail_provider: Callable[[tuple[int, int]], Image.Image | None] | None = None,
 ) -> None:
-    """Register full-page and cropped renderers for one virtual PDF page."""
+    """Register full-page, cropped, and thumbnail renderers for one virtual PDF page."""
     with _REGISTRY_LOCK:
         key = file.resolve()
         _PAGE_PROVIDERS[key] = provider
         _REGION_PROVIDERS[key] = region_provider
+        if thumbnail_provider is not None:
+            _THUMBNAIL_PROVIDERS[key] = thumbnail_provider
 
 
 def unregister_page_provider(file: Path) -> None:
@@ -43,6 +50,7 @@ def unregister_page_provider(file: Path) -> None:
         key = file.resolve()
         _PAGE_PROVIDERS.pop(key, None)
         _REGION_PROVIDERS.pop(key, None)
+        _THUMBNAIL_PROVIDERS.pop(key, None)
 
 
 def ensure_page_available(file: Path) -> None:
@@ -67,6 +75,18 @@ def render_registered_page_region(
     if provider is None:
         return None
     return provider(source_box, target_size)
+
+
+def render_registered_page_thumbnail(
+    file: Path,
+    max_size: tuple[int, int] = (200, 260),
+) -> Image.Image | None:
+    """Render a fast low-resolution thumbnail for a virtual PDF page, or return None."""
+    with _REGISTRY_LOCK:
+        provider = _THUMBNAIL_PROVIDERS.get(file.resolve())
+    if provider is None:
+        return None
+    return provider(max_size)
 
 
 class PdfBookshelf:
@@ -108,6 +128,7 @@ class PdfBookshelf:
                 lambda source_box, target_size, idx=i: self._render_page_region(
                     idx, source_box, target_size
                 ),
+                lambda max_size, idx=i: self._render_page_thumbnail(idx, max_size),
             )
 
     def _render_page_on_demand(self, index: int) -> None:
@@ -142,6 +163,41 @@ class PdfBookshelf:
                 document.close()
         trim_memory()
 
+    def _render_page_thumbnail(
+        self, index: int, max_size: tuple[int, int] = (200, 260)
+    ) -> Image.Image | None:
+        """Render a fast low-resolution thumbnail directly from PDFium."""
+        if self._closed or index < 0 or index >= self.page_count:
+            return None
+        page_item = self.pages[index]
+        native_w = page_item.native_width
+        native_h = page_item.native_height
+        if native_w < 1 or native_h < 1:
+            return None
+        s = min(max_size[0] / native_w, max_size[1] / native_h)
+        render_scale = max(0.01, s * self.scale)
+        document = pdfium.PdfDocument(self.pdf_path)
+        page = document[index]
+        try:
+            bitmap = page.render(
+                scale=render_scale,
+                limit_image_cache=True,
+                rev_byteorder=True,
+            )
+            try:
+                shared = bitmap.to_pil()
+                try:
+                    thumb = shared.convert("RGB")
+                    thumb.load()
+                    return thumb
+                finally:
+                    shared.close()
+            finally:
+                bitmap.close()
+        finally:
+            page.close()
+            document.close()
+
     def _render_page_region(
         self,
         index: int,
@@ -169,43 +225,42 @@ class PdfBookshelf:
             (native_width - right) / self.scale,
             top / self.scale,
         )
-        with self._lock:
-            if self._closed:
-                return None
-            document = pdfium.PdfDocument(self.pdf_path)
-            page = document[index]
+        if self._closed:
+            return None
+        document = pdfium.PdfDocument(self.pdf_path)
+        page = document[index]
+        try:
+            bitmap = page.render(
+                scale=render_scale,
+                crop=crop,
+                limit_image_cache=True,
+                rev_byteorder=True,
+            )
             try:
-                bitmap = page.render(
-                    scale=render_scale,
-                    crop=crop,
-                    limit_image_cache=True,
-                    rev_byteorder=True,
-                )
+                shared = bitmap.to_pil()
                 try:
-                    shared = bitmap.to_pil()
-                    try:
-                        rendered = shared.convert("RGB")
-                    finally:
-                        shared.close()
+                    rendered = shared.convert("RGB")
                 finally:
-                    bitmap.close()
+                    shared.close()
             finally:
-                page.close()
-                document.close()
+                bitmap.close()
+        finally:
+            page.close()
+            document.close()
 
         if rendered.size != target_size:
             corrected = rendered.resize(target_size, Image.Resampling.BICUBIC)
             rendered.close()
             rendered = corrected
         rendered.load()
-        trim_memory()
         return rendered
 
     def close(self) -> None:
         """Close PDF document and clean up temporary directory."""
-        if self._closed:
-            return
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
         atexit.unregister(self.close)
         for page_file in self._page_files:
             unregister_page_provider(page_file)

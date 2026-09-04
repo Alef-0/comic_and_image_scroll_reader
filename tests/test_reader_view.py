@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ class FakeCanvas:
     def __init__(self) -> None:
         self.cancelled: list[str] = []
         self.jobs: list[tuple[str, object]] = []
+        self._next_id = 1
 
     def after(self, _delay: int, callback: object) -> str:
         job = f"job-{len(self.jobs)}"
@@ -21,6 +23,28 @@ class FakeCanvas:
 
     def after_cancel(self, job: str) -> None:
         self.cancelled.append(job)
+
+    def create_rectangle(self, *args: object, **kwargs: object) -> int:
+        item = self._next_id
+        self._next_id += 1
+        return item
+
+    def create_image(self, *args: object, **kwargs: object) -> int:
+        item = self._next_id
+        self._next_id += 1
+        return item
+
+    def coords(self, *args: object) -> None:
+        pass
+
+    def delete(self, *args: object) -> None:
+        pass
+
+    def tag_lower(self, *args: object) -> None:
+        pass
+
+    def update_idletasks(self) -> None:
+        pass
 
 
 class ReaderViewTests(unittest.TestCase):
@@ -544,6 +568,127 @@ class ReaderViewTests(unittest.TestCase):
         # Step 2: final zoom (stash becomes empty) -> is_interactive=False (settled dispatch)
         reader._apply_next_zoom_step()
         self.assertEqual(paints, [True, False])
+
+    def test_paint_creates_and_evicts_placeholder_zones(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        created_rects: list[tuple] = []
+        deleted_items: list[int] = []
+
+        reader.canvas = FakeCanvas()
+        reader.canvas.create_rectangle = lambda *args, **kwargs: created_rects.append(args) or len(created_rects)
+        reader.canvas.delete = lambda item: deleted_items.append(item)
+        reader._cancel_pending_work = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader._render_page = lambda idx: None
+        reader.canvas_pages = {}
+        reader.canvas_zones = {}
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(4)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(4)]
+
+        # Viewport covers pages 0 and 1
+        reader.paint()
+        self.assertEqual(len(reader.canvas_zones), 2)
+        self.assertIn(Path("p0.png"), reader.canvas_zones)
+        self.assertIn(Path("p1.png"), reader.canvas_zones)
+
+        # Scroll to pages 2 and 3 -> pages 0 and 1 zones must be evicted
+        reader.scroll_y = 200
+        reader.paint()
+        self.assertEqual(len(reader.canvas_zones), 2)
+        self.assertIn(Path("p2.png"), reader.canvas_zones)
+        self.assertIn(Path("p3.png"), reader.canvas_zones)
+        self.assertNotIn(Path("p0.png"), reader.canvas_zones)
+        self.assertNotIn(Path("p1.png"), reader.canvas_zones)
+        self.assertEqual(len(deleted_items), 2)
+
+    def test_zoom_uses_blurred_preview_blurb_and_completes_on_async_result(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+        from comic_scroll_reader.imaging.async_renderer import RenderResult
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        created_images: list[tuple] = []
+        reader.canvas.create_image = lambda *args, **kwargs: created_images.append((args, kwargs)) or len(created_images)
+        reader._cancel_pending_work = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.canvas_pages = {}
+        reader.canvas_zones = {}
+        reader.page_thumbnails = {}
+        reader._preview_pages = set()
+        reader._render_generation = 1
+
+        page_file = Path("zoom_test.png")
+        reader.pages = [ComicPage(page_file, 100, 100)]
+        reader.positions = [PagePosition(0, 0, 100, 100)]
+
+        # Provide a thumbnail in cache
+        thumb = Image.new("RGB", (50, 50), (120, 130, 140))
+        reader.page_thumbnails[page_file] = thumb
+
+        # Mock async_renderer
+        submitted = []
+        results_queue = []
+        reader.async_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted.append(kwargs) or True,
+            has_pending_work=False,
+            get_results=lambda: results_queue,
+            cancel_all=lambda: None,
+        )
+
+        with patch(
+            "comic_scroll_reader.ui.reader_view.ImageTk.PhotoImage",
+            side_effect=lambda *args, **kwargs: SimpleNamespace(width=lambda: 100, height=lambda: 100),
+        ):
+            # Paint viewport -> Crisp is not in ready_photos or webp_cache, so blurred preview is used
+            reader.paint()
+
+            self.assertIn(page_file, reader._preview_pages)
+            self.assertIn(page_file, reader.canvas_pages)
+            self.assertEqual(len(submitted), 1)
+
+            # When async worker finishes crisp high-res render:
+            crisp_img = Image.new("RGB", (100, 100), (255, 0, 0))
+            res = RenderResult(
+                generation=1,
+                page_file=page_file,
+                region_key=reader._region_key(reader.pages[0], reader.positions[0]),
+                image=crisp_img,
+            )
+            results_queue.append(res)
+
+            preloaded = []
+            reader._schedule_neighbor_preload = lambda: preloaded.append(True)
+
+            reader._process_async_results()
+
+            # Blurred preview flag should be cleared
+            self.assertNotIn(page_file, reader._preview_pages)
+            # Because all visible pages are finished, neighbor preload was triggered
+            self.assertEqual(preloaded, [True])
+
+        thumb.close()
 
 
 if __name__ == "__main__":

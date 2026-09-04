@@ -150,6 +150,50 @@ class PdfReaderTests(unittest.TestCase):
             bookshelf.close()
             self.assertFalse(cache_dir.exists())
 
+    def test_pdf_bookshelf_renders_thumbnail_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_file = Path(temporary) / "thumb.pdf"
+            self._create_sample_pdf(pdf_file, [(300, 400)])
+            bookshelf = PdfBookshelf(pdf_file, scale=1.5)
+            try:
+                from comic_scroll_reader.files.bookshelf import get_page_thumbnail
+
+                thumb = get_page_thumbnail(bookshelf.pages[0].file, (150, 200))
+                self.assertIsNotNone(thumb)
+                self.assertLessEqual(thumb.width, 150)
+                self.assertLessEqual(thumb.height, 200)
+                thumb.close()
+                self.assertFalse(bookshelf.pages[0].file.is_file())
+            finally:
+                bookshelf.close()
+
+    def test_concurrent_pdf_region_rendering(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        from comic_scroll_reader.files.bookshelf import render_page_region
+
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_file = Path(temporary) / "concurrent.pdf"
+            self._create_sample_pdf(pdf_file, [(200, 300), (200, 300), (200, 300), (200, 300)])
+            bookshelf = PdfBookshelf(pdf_file, scale=1.0)
+            try:
+                def render_task(i: int):
+                    img = render_page_region(
+                        bookshelf.pages[i].file,
+                        (0.0, 0.0, 100.0, 100.0),
+                        (50, 50),
+                    )
+                    size = img.size if img else None
+                    if img:
+                        img.close()
+                    return size
+
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    results = list(ex.map(render_task, range(4)))
+
+                self.assertEqual(results, [(50, 50), (50, 50), (50, 50), (50, 50)])
+            finally:
+                bookshelf.close()
+
 
 if __name__ == "__main__":
     unittest.main()

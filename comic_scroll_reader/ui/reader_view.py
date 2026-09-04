@@ -21,7 +21,7 @@ from ..core.layout import (
 )
 from ..core.memory import MemoryShelf, trim_memory
 from ..core.models import ComicPage, PagePosition
-from ..files.bookshelf import PDF_SUFFIXES, render_page_region
+from ..files.bookshelf import PDF_SUFFIXES, get_page_thumbnail, render_page_region
 from ..imaging.async_renderer import AsyncRenderer
 from .window import (
     CANVAS_COLOR,
@@ -66,13 +66,14 @@ class ComicStrip:
     RENDER_STEP_DELAY_MS = 1
     PRELOAD_DELAY_MS = 150
     PRELOAD_STEP_DELAY_MS = 10
-    PRELOAD_DISTANCE = 2
+    PRELOAD_DISTANCE = 3
     REGION_GRANULARITY = 128
     REGION_OVERSCAN = 128
     MEMORY_TRIM_DELAY_MS = 250
     CONTROL_MASK = 0x0004
     PAGE_GAP_SIZE = 12
     is_folder = True
+    _render_generation = 0
 
     def __init__(
         self,
@@ -117,6 +118,9 @@ class ComicStrip:
         self.drawn_webp_cache = MemoryShelf(self.DRAWN_CACHE_BYTES, _byte_length)
         self.ready_photos = MemoryShelf(self.PHOTO_CACHE_BYTES, _photo_bytes)
         self.canvas_pages: dict[Path, CanvasPage] = {}
+        self.canvas_zones: dict[Path, int] = {}
+        self.page_thumbnails: dict[Path, Image.Image] = {}
+        self._preview_pages: set[Path] = set()
         self.should_close = False
         self.fullscreen = False
         self._windowed_geometry = self.window.TKroot.geometry()
@@ -266,6 +270,13 @@ class ComicStrip:
         self.stop_zooming()
         if getattr(self, "async_renderer", None) is not None:
             self.async_renderer.shutdown()
+        for thumb in getattr(self, "page_thumbnails", {}).values():
+            try:
+                thumb.close()
+            except Exception:
+                pass
+        if hasattr(self, "page_thumbnails"):
+            self.page_thumbnails.clear()
         self.should_close = True
 
     def _is_maximized(self) -> bool:
@@ -528,6 +539,71 @@ class ComicStrip:
             (key[5], key[6]),
         )
 
+    def _update_thumbnail(self, page_file: Path, image: Image.Image) -> None:
+        """Update or cache a low-resolution thumbnail from a rendered image."""
+        if page_file in self.page_thumbnails or image is None:
+            return
+        try:
+            thumb = image.copy()
+            thumb.thumbnail((200, 260), Image.Resampling.BILINEAR)
+            thumb.load()
+            self.page_thumbnails[page_file] = thumb
+            if len(self.page_thumbnails) > 64:
+                oldest_file = next(iter(self.page_thumbnails))
+                old_thumb = self.page_thumbnails.pop(oldest_file)
+                try:
+                    old_thumb.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _get_blurred_preview_photo(
+        self, page: ComicPage, key: RegionKey
+    ) -> ImageTk.PhotoImage | None:
+        """Create a smooth blurred placeholder photo matching the exact region bounds."""
+        thumb = self.page_thumbnails.get(page.file)
+        if thumb is None:
+            thumb = get_page_thumbnail(page.file)
+            if thumb is not None:
+                self.page_thumbnails[page.file] = thumb
+                if len(self.page_thumbnails) > 64:
+                    oldest_file = next(iter(self.page_thumbnails))
+                    old_thumb = self.page_thumbnails.pop(oldest_file)
+                    try:
+                        old_thumb.close()
+                    except Exception:
+                        pass
+
+        if thumb is None or thumb.width < 1 or thumb.height < 1:
+            return None
+
+        _, display_width, display_height, left, top, width, height = key
+        if display_width < 1 or display_height < 1 or width < 1 or height < 1:
+            return None
+
+        tw, th = thumb.width, thumb.height
+        box = (
+            max(0.0, left / display_width * tw),
+            max(0.0, top / display_height * th),
+            min(float(tw), (left + width) / display_width * tw),
+            min(float(th), (top + height) / display_height * th),
+        )
+        if box[2] <= box[0] or box[3] <= box[1]:
+            return None
+
+        try:
+            preview = thumb.resize(
+                (width, height), box=box, resample=Image.Resampling.BILINEAR
+            )
+            try:
+                photo = ImageTk.PhotoImage(preview, master=self.canvas)
+                return photo
+            finally:
+                preview.close()
+        except Exception:
+            return None
+
     def _store_drawn_webp(self, key: RegionKey, rendered: Image.Image) -> bytes:
         buf = io.BytesIO()
         rendered.save(buf, format="WEBP", quality=85, method=0)
@@ -544,6 +620,7 @@ class ComicStrip:
         if rendered is None:
             return None
         try:
+            self._update_thumbnail(page.file, rendered)
             return self._store_drawn_webp(cache_key, rendered)
         finally:
             rendered.close()
@@ -559,6 +636,7 @@ class ComicStrip:
         if webp_bytes is not None:
             with Image.open(io.BytesIO(webp_bytes)) as rendered:
                 photo = ImageTk.PhotoImage(rendered, master=self.canvas)
+                self._update_thumbnail(page.file, rendered)
         else:
             rendered = self._render_region(page, cache_key)
             if rendered is None:
@@ -566,6 +644,7 @@ class ComicStrip:
             try:
                 photo = ImageTk.PhotoImage(rendered, master=self.canvas)
                 self._store_drawn_webp(cache_key, rendered)
+                self._update_thumbnail(page.file, rendered)
             finally:
                 rendered.close()
         self.ready_photos.store(cache_key, photo)
@@ -739,6 +818,9 @@ class ComicStrip:
         self.scroll_y = clamp_scroll(
             anchored_scroll, self.content_height, self.viewport_height
         )
+        self._render_generation = getattr(self, "_render_generation", 0) + 1
+        if getattr(self, "async_renderer", None) is not None:
+            self.async_renderer.set_current_generation(self._render_generation)
         self.paint(priority_y=anchor, is_interactive=is_interactive)
         self._show_status()
         return True
@@ -763,6 +845,9 @@ class ComicStrip:
             self.content_height,
             self.viewport_height,
         )
+        self._render_generation = getattr(self, "_render_generation", 0) + 1
+        if getattr(self, "async_renderer", None) is not None:
+            self.async_renderer.set_current_generation(self._render_generation)
         self.paint(priority_y=anchor)
         self._show_status()
 
@@ -941,7 +1026,11 @@ class ComicStrip:
         if region_key is None:
             return
         existing = self.canvas_pages.get(page.file)
-        if existing is not None and existing[2] == region_key:
+        if (
+            existing is not None
+            and existing[2] == region_key
+            and page.file not in self._preview_pages
+        ):
             self.canvas.coords(
                 existing[0],
                 position.x + self.pan_x + region_key[3],
@@ -965,11 +1054,18 @@ class ComicStrip:
             tags=("comic-page",),
         )
         self.canvas_pages[page.file] = (item, photo, region_key)
+        self._preview_pages.discard(page.file)
 
     def paint(
         self, priority_y: int | None = None, is_interactive: bool = False
     ) -> None:
         self._cancel_pending_work()
+        if not hasattr(self, "canvas_zones"):
+            self.canvas_zones = {}
+        if not hasattr(self, "_preview_pages"):
+            self._preview_pages = set()
+        if not hasattr(self, "page_thumbnails"):
+            self.page_thumbnails = {}
 
         first, last = visible_page_range(
             self.positions, self.scroll_y, self.viewport_height
@@ -983,6 +1079,41 @@ class ComicStrip:
             is not None
         }
         wanted_files = set(wanted_regions)
+
+        # 1. Maintain background page placeholder zones for all visible pages
+        for index in range(first, last):
+            page = self.pages[index]
+            position = self.positions[index]
+            page_x = position.x + self.pan_x
+            page_y = position.y - self.scroll_y
+            page_x2 = page_x + position.width
+            page_y2 = page_y + position.height
+            if page.file in self.canvas_zones:
+                self.canvas.coords(
+                    self.canvas_zones[page.file],
+                    page_x,
+                    page_y,
+                    page_x2,
+                    page_y2,
+                )
+            else:
+                zone_item = self.canvas.create_rectangle(
+                    page_x,
+                    page_y,
+                    page_x2,
+                    page_y2,
+                    fill="#181818",
+                    outline="#2c2c2c",
+                    tags=("page-zone",),
+                )
+                self.canvas_zones[page.file] = zone_item
+
+        for file in set(self.canvas_zones) - wanted_files:
+            zone_item = self.canvas_zones.pop(file)
+            self.canvas.delete(zone_item)
+
+        # 2. Position existing images, or display blurred preview blurbs
+        async_renderer = getattr(self, "async_renderer", None)
         for index in range(first, last):
             page = self.pages[index]
             position = self.positions[index]
@@ -990,24 +1121,55 @@ class ComicStrip:
             if region_key is None:
                 continue
             existing = self.canvas_pages.get(page.file)
-            if existing is not None and existing[2] == region_key:
+            if (
+                existing is not None
+                and existing[2] == region_key
+                and page.file not in self._preview_pages
+            ):
                 self.canvas.coords(
                     existing[0],
                     position.x + self.pan_x + region_key[3],
                     position.y - self.scroll_y + region_key[4],
                 )
-            elif existing is not None:
-                old_region = existing[2]
-                self.canvas.coords(
-                    existing[0],
-                    position.x + self.pan_x + old_region[3],
-                    position.y - self.scroll_y + old_region[4],
-                )
+            elif (
+                self.ready_photos.get(region_key) is not None
+                or self.drawn_webp_cache.get(region_key) is not None
+                or async_renderer is None
+            ):
+                self._render_page(index)
+                self._preview_pages.discard(page.file)
+            else:
+                # High-res tile is pending. Generate a blurred preview matching the new region.
+                preview_photo = self._get_blurred_preview_photo(page, region_key)
+                if preview_photo is not None:
+                    if existing is not None:
+                        self.canvas.delete(existing[0])
+                    item = self.canvas.create_image(
+                        position.x + self.pan_x + region_key[3],
+                        position.y - self.scroll_y + region_key[4],
+                        anchor="nw",
+                        image=preview_photo,
+                        tags=("comic-page",),
+                    )
+                    self.canvas_pages[page.file] = (item, preview_photo, region_key)
+                    self._preview_pages.add(page.file)
+                elif existing is not None and existing[2] == region_key:
+                    self.canvas.coords(
+                        existing[0],
+                        position.x + self.pan_x + region_key[3],
+                        position.y - self.scroll_y + region_key[4],
+                    )
+                elif existing is not None:
+                    self.canvas.delete(existing[0])
+                    self.canvas_pages.pop(page.file, None)
+                    self._preview_pages.discard(page.file)
 
+        # 3. Evict stale canvas images outside visible range
         evicted = False
         for file in set(self.canvas_pages) - wanted_files:
             item, _photo, _size = self.canvas_pages.pop(file)
             self.canvas.delete(item)
+            self._preview_pages.discard(file)
             evicted = True
 
         # Tk photos are uncompressed. Retain only the exact viewport regions.
@@ -1022,6 +1184,7 @@ class ComicStrip:
         if evicted:
             self._schedule_memory_trim()
 
+        # 4. Determine pages needing high-res background rendering
         viewport_anchor = self.viewport_height // 2 if priority_y is None else priority_y
         content_anchor = self.scroll_y + min(max(viewport_anchor, 0), self.viewport_height)
         needs_render = [
@@ -1032,10 +1195,10 @@ class ComicStrip:
                 self.pages[index].file not in self.canvas_pages
                 or self.canvas_pages[self.pages[index].file][2]
                 != wanted_regions.get(self.pages[index].file)
+                or self.pages[index].file in self._preview_pages
             )
         ]
         prioritized = pages_nearest_to(self.positions, needs_render, content_anchor)
-        async_renderer = getattr(self, "async_renderer", None)
         cold_indices: list[int] = []
         for index in prioritized:
             page = self.pages[index]
@@ -1046,9 +1209,11 @@ class ComicStrip:
                 or async_renderer is None
             ):
                 self._render_page(index)
+                self._preview_pages.discard(page.file)
             elif not is_interactive:
                 cold_indices.append(index)
 
+        # 5. Submit cold jobs to async renderer
         if async_renderer is not None and cold_indices:
             generation = getattr(self, "_render_generation", 0)
             for rank, index in enumerate(cold_indices):
@@ -1065,6 +1230,7 @@ class ComicStrip:
             self._schedule_async_poll()
 
         self.canvas.tag_lower("comic-page")
+        self.canvas.tag_lower("page-zone")
         self._visible_range = (first, last)
         if hasattr(self, "_pending_render_indices"):
             self._pending_render_indices.clear()
@@ -1110,6 +1276,7 @@ class ComicStrip:
 
             try:
                 self._store_drawn_webp(res.region_key, res.image)
+                self._update_thumbnail(res.page_file, res.image)
 
                 if res.page_file in visible_files:
                     page, position = visible_files[res.page_file]
@@ -1128,16 +1295,41 @@ class ComicStrip:
                             tags=("comic-page",),
                         )
                         self.canvas_pages[res.page_file] = (item, photo, res.region_key)
+                        self._preview_pages.discard(res.page_file)
                         any_canvas_updated = True
             finally:
                 res.image.close()
 
         if any_canvas_updated:
             self.canvas.tag_lower("comic-page")
+            self.canvas.tag_lower("page-zone")
             self.canvas.update_idletasks()
 
         if async_renderer.has_pending_work:
             self._schedule_async_poll()
+        else:
+            # Check if all visible pages have been finished with their crisp target regions!
+            needs_drawing = False
+            for i in range(first, last):
+                if i >= len(self.pages) or i >= len(self.positions):
+                    continue
+                p = self.pages[i]
+                pos = self.positions[i]
+                expected_key = self._region_key(p, pos)
+                if expected_key is None:
+                    continue
+                existing = self.canvas_pages.get(p.file)
+                if (
+                    existing is None
+                    or existing[2] != expected_key
+                    or p.file in self._preview_pages
+                ):
+                    needs_drawing = True
+                    break
+            if needs_drawing:
+                self.paint()
+            else:
+                self._schedule_neighbor_preload()
 
     def _sync_scrollbar(self) -> None:
         if self.content_height <= self.viewport_height:

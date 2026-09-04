@@ -104,6 +104,39 @@ def render_page_region(
         return None
 
 
+def get_page_thumbnail(
+    file: Path, max_size: tuple[int, int] = (200, 260)
+) -> Image.Image | None:
+    """Return a low-resolution thumbnail image for placeholder and preview display."""
+    from .pdf_reader import render_registered_page_thumbnail
+
+    thumb = render_registered_page_thumbnail(file, max_size)
+    if thumb is not None:
+        return thumb
+
+    if not file.is_file():
+        return None
+
+    try:
+        with Image.open(file) as source:
+            source.draft("RGB", max_size)
+            oriented = ImageOps.exif_transpose(source)
+            try:
+                converted = (
+                    oriented.convert("RGB") if oriented.mode != "RGB" else oriented
+                )
+                converted.thumbnail(max_size, Image.Resampling.BILINEAR)
+                result = converted.copy()
+                result.load()
+                return result
+            finally:
+                if converted is not oriented and converted is not source:
+                    converted.close()
+                if oriented is not source:
+                    oriented.close()
+    except (OSError, ValueError, UnidentifiedImageError):
+        return None
+
 
 def load_pages(files: Iterable[Path]) -> list[ComicPage]:
     """Return image pages from a collection of files in natural filename order."""

@@ -163,6 +163,8 @@ class AsyncRenderer:
         self.result_queue: queue.Queue[RenderResult] = queue.Queue()
         self._current_generation = 0
         self._threads: list[threading.Thread] = []
+        self._busy_count = 0
+        self._busy_lock = threading.Lock()
         self._closed = False
         self._start_workers()
 
@@ -184,6 +186,8 @@ class AsyncRenderer:
             if request.generation < self._current_generation:
                 continue
 
+            with self._busy_lock:
+                self._busy_count += 1
             try:
                 rendered = render_page_region(
                     request.page_file,
@@ -193,6 +197,9 @@ class AsyncRenderer:
                 )
             except Exception:
                 rendered = None
+            finally:
+                with self._busy_lock:
+                    self._busy_count -= 1
 
             if self._closed or request.generation < self._current_generation:
                 if rendered is not None:
@@ -246,8 +253,10 @@ class AsyncRenderer:
 
     @property
     def has_pending_work(self) -> bool:
-        """Return True if any requests are queued or uncollected results remain."""
-        return not self.request_queue.is_empty() or not self.result_queue.empty()
+        """Return True if any requests are queued, actively rendering, or uncollected."""
+        with self._busy_lock:
+            busy = self._busy_count > 0
+        return busy or not self.request_queue.is_empty() or not self.result_queue.empty()
 
     def get_results(self) -> list[RenderResult]:
         """Fetch all available completed render results without blocking."""

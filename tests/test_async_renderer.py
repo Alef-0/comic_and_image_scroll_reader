@@ -170,6 +170,63 @@ class AsyncRendererTests(unittest.TestCase):
 
         renderer.shutdown()
 
+    def test_has_pending_work_tracks_in_flight_busy_workers(self) -> None:
+        import threading
+        from comic_scroll_reader.files.pdf_reader import (
+            register_page_provider,
+            unregister_page_provider,
+        )
+
+        renderer = AsyncRenderer(max_workers=1, max_pending=4)
+        entered_event = threading.Event()
+        release_event = threading.Event()
+
+        fake_file = Path("/tmp/fake_async_busy_test.jpg")
+
+        def mock_region(box, size):
+            entered_event.set()
+            release_event.wait(timeout=2.0)
+            return Image.new("RGB", size, (10, 20, 30))
+
+        register_page_provider(fake_file, lambda: None, mock_region)
+        try:
+            renderer.submit(
+                priority=0,
+                generation=1,
+                page_file=fake_file,
+                region_key=(fake_file, 100, 100, 0, 0, 50, 50),
+                source_box=(0.0, 0.0, 100.0, 100.0),
+                target_size=(50, 50),
+            )
+
+            # Wait until worker has popped the job and entered the render function
+            self.assertTrue(entered_event.wait(timeout=2.0))
+
+            # At this exact moment, request_queue is empty, but worker is busy!
+            self.assertTrue(renderer.request_queue.is_empty())
+            # has_pending_work MUST be True so the UI polling loop doesn't stall!
+            self.assertTrue(renderer.has_pending_work)
+
+            # Release the worker
+            release_event.set()
+
+            # Poll for results
+            results = []
+            for _ in range(50):
+                results = renderer.get_results()
+                if results:
+                    break
+                time.sleep(0.01)
+
+            self.assertEqual(len(results), 1)
+            results[0].image.close()
+
+            # Now work is completed and result collected -> has_pending_work must be False
+            self.assertFalse(renderer.has_pending_work)
+        finally:
+            unregister_page_provider(fake_file)
+            renderer.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()
