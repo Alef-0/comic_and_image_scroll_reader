@@ -8,19 +8,21 @@ import tkinter as tk
 import FreeSimpleGUI as sg
 
 from .config import CONFIG_PATH, load_config, save_config
-from .files.bookshelf import scan_bookshelf
+from .files.bookshelf import load_pages, scan_bookshelf
 from .reading_progress import (
     ReadingProgress,
     progress_for_folder,
     save_reading_progress,
 )
-from .ui.launcher import run_launcher
+from .ui.launcher import dropped_target, run_launcher
 from .ui.reader_view import ComicStrip
 from .ui.window import (
+    READER_DROP_EVENT_KEY,
     ask_for_page_number,
     ask_for_bookshelf,
     build_reader_window,
     desktop_size,
+    enable_window_drop,
     is_maximized,
     maximize,
     PAGE_COUNTER_KEY,
@@ -41,10 +43,10 @@ def read_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         description="Display a folder of images as a vertically scrolling comic."
     )
     parser.add_argument(
-        "folder",
-        nargs="?",
+        "paths",
+        nargs="*",
         type=Path,
-        help="folder containing comic images; omit it to use the folder picker",
+        help="folder or image files containing comic pages; omit it to use the folder picker",
     )
     parser.add_argument(
         "--windowed",
@@ -72,13 +74,24 @@ def read_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="start with every collapsible toolbar menu open for UI inspection",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.paths:
+        args.folder = None
+        args.images = []
+    elif len(args.paths) == 1 and not args.paths[0].is_file():
+        args.folder = args.paths[0]
+        args.images = []
+    else:
+        args.folder = None
+        args.images = args.paths
+    return args
 
 
 def _open_another_folder(reader: ComicStrip) -> None:
     reader.stop_zooming()
+    start_folder = reader.folder if reader.folder.is_dir() else reader.folder.parent
     try:
-        selected = ask_for_bookshelf(reader.folder, reader.window.TKroot)
+        selected = ask_for_bookshelf(start_folder, reader.window.TKroot)
     except RuntimeError as error:
         sg.popup_error(f"Unable to open the system folder chooser:\n{error}")
         return
@@ -87,7 +100,7 @@ def _open_another_folder(reader: ComicStrip) -> None:
     pages = scan_bookshelf(selected) if selected.is_dir() else []
     if pages:
         _save_current_progress(reader)
-        reader.open_bookshelf(pages, selected)
+        reader.open_bookshelf(pages, selected, is_folder=True)
         _offer_to_resume(reader)
     else:
         sg.popup_error(f"No readable supported images were found in:\n{selected}")
@@ -95,7 +108,7 @@ def _open_another_folder(reader: ComicStrip) -> None:
 
 def _save_current_progress(reader: ComicStrip) -> None:
     """Persist only the active folder and page when remembering is enabled."""
-    if not reader.remember_folder:
+    if not reader.remember_folder or not getattr(reader, "is_folder", True):
         return
     try:
         save_reading_progress(
@@ -110,7 +123,7 @@ def _save_current_progress(reader: ComicStrip) -> None:
 
 def _offer_to_resume(reader: ComicStrip) -> None:
     """Offer to restore a saved position whenever a folder is reopened."""
-    if not reader.remember_folder:
+    if not reader.remember_folder or not getattr(reader, "is_folder", True):
         return
     progress = progress_for_folder(reader.folder)
     if progress is None:
@@ -195,20 +208,43 @@ def _save_window_state(normal_geometry: str, maximized: bool) -> None:
 
 
 def run_reader(
-    folder: Path,
+    target: Path | list[Path] | None = None,
     *,
+    folder: Path | list[Path] | None = None,
     start_maximized: bool | None = None,
     dual_page: bool = False,
     manga_reading: bool = False,
     expand_all: bool = False,
 ) -> int:
-    if not folder.is_dir():
-        sg.popup_error(f"This is not a folder:\n{folder}")
-        return 2
-    pages = scan_bookshelf(folder)
-    if not pages:
-        sg.popup_error(f"No readable supported images were found in:\n{folder}")
-        return 1
+    active_target = target if target is not None else folder
+    if active_target is None:
+        raise ValueError("A folder or image list must be provided.")
+
+    is_folder = True
+    if isinstance(active_target, list):
+        pages = load_pages(active_target)
+        if not pages:
+            sg.popup_error("No readable supported images were found.")
+            return 1
+        active_folder = pages[0].file.parent
+        is_folder = False
+    elif active_target.is_file():
+        pages = load_pages([active_target])
+        if not pages:
+            sg.popup_error(f"No readable supported images were found in:\n{active_target}")
+            return 1
+        active_folder = active_target.parent
+        is_folder = False
+    else:
+        if not active_target.is_dir():
+            sg.popup_error(f"This is not a folder:\n{active_target}")
+            return 2
+        pages = scan_bookshelf(active_target)
+        if not pages:
+            sg.popup_error(f"No readable supported images were found in:\n{active_target}")
+            return 1
+        active_folder = active_target
+        is_folder = True
 
     config = load_config()
     dual_page = dual_page or config["dual_page"]
@@ -217,6 +253,11 @@ def run_reader(
     saved_geometry = config["window_geometry"]
     initial_size = size_from_geometry(saved_geometry) or windowed_size(
         screen_width, screen_height
+    )
+    title = (
+        reader_window_title(active_folder)
+        if is_folder
+        else reader_window_title(active_folder, len(pages))
     )
     window = build_reader_window(
         initial_size,
@@ -229,8 +270,9 @@ def run_reader(
         stop_at_fit_width=config["stop_at_fit_width"],
         top_bar_visible=config["top_bar_visible"],
         expand_all=expand_all,
-        title=reader_window_title(folder),
+        title=title,
     )
+    enable_window_drop(window)
     reader: ComicStrip | None = None
     normal_geometry = str(saved_geometry) if size_from_geometry(saved_geometry) else ""
     maximized_on_close = False
@@ -247,7 +289,7 @@ def run_reader(
         reader = ComicStrip(
             window,
             pages,
-            folder,
+            active_folder,
             screen_width,
             dual_page=dual_page,
             manga_reading=manga_reading,
@@ -256,9 +298,11 @@ def run_reader(
             remember_folder=config["remember_folder"],
             prevent_image_upscale=config["prevent_image_upscale"],
             stop_at_fit_width=config["stop_at_fit_width"],
+            is_folder=is_folder,
         )
         reader.restore_zoom_level(str(config["zoom_level"]))
-        _offer_to_resume(reader)
+        if is_folder:
+            _offer_to_resume(reader)
         window.refresh()
         should_maximize = (
             bool(config["window_maximized"])
@@ -287,6 +331,37 @@ def run_reader(
                 except tk.TclError:
                     pass
             if toggle_collapsible_group(window, event):
+                continue
+            if event == READER_DROP_EVENT_KEY:
+                dropped = dropped_target(
+                    values.get(READER_DROP_EVENT_KEY), window.TKroot
+                )
+                if dropped is None:
+                    sg.popup_error(
+                        "Drop a folder or images containing comic pages."
+                    )
+                    continue
+                if isinstance(dropped, list):
+                    new_pages = load_pages(dropped)
+                    if not new_pages:
+                        sg.popup_error(
+                            "No readable supported images were found."
+                        )
+                        continue
+                    _save_current_progress(reader)
+                    reader.open_bookshelf(
+                        new_pages, new_pages[0].file.parent, is_folder=False
+                    )
+                elif dropped.is_dir():
+                    new_pages = scan_bookshelf(dropped)
+                    if not new_pages:
+                        sg.popup_error(
+                            f"No readable supported images were found in:\n{dropped}"
+                        )
+                        continue
+                    _save_current_progress(reader)
+                    reader.open_bookshelf(new_pages, dropped, is_folder=True)
+                    _offer_to_resume(reader)
                 continue
             if event == TOP_BAR_TOGGLE_KEY:
                 toggle_top_bar(window)
@@ -337,10 +412,17 @@ def run_reader(
 
 def main(argv: list[str] | None = None) -> int:
     arguments = read_arguments(argv)
-    folder = arguments.folder.expanduser() if arguments.folder else run_launcher()
-    while folder is not None:
+    target: Path | list[Path] | None = None
+    if getattr(arguments, "images", None):
+        target = [path.expanduser() for path in arguments.images]
+    elif arguments.folder:
+        target = arguments.folder.expanduser()
+    else:
+        target = run_launcher()
+
+    while target is not None:
         result = run_reader(
-            folder,
+            target,
             start_maximized=arguments.start_maximized,
             dual_page=arguments.dual_page,
             manga_reading=arguments.manga_reading,
@@ -348,5 +430,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         if result == 0:
             return 0
-        folder = run_launcher()
+        target = run_launcher()
     return 0
+

@@ -44,6 +44,26 @@ class ReaderViewTests(unittest.TestCase):
         self.assertEqual(status_updates, ["Chapter 1"])
         self.assertEqual(zoom_updates, ["50%"])
 
+    def test_status_includes_image_count_when_not_folder(self) -> None:
+        status_updates: list[str] = []
+        zoom_updates: list[str] = []
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.original_size = False
+        reader.strip_width = 500
+        reader.viewport_width = 1_000
+        reader.folder = Path("/pictures/Chapter 1")
+        reader.pages = [object(), object(), object()]
+        reader.is_folder = False
+        reader.window = {
+            "-STATUS-": SimpleNamespace(update=status_updates.append),
+            "-ZOOM-STATUS-": SimpleNamespace(update=zoom_updates.append),
+        }
+
+        reader._show_status()
+
+        self.assertEqual(status_updates, ["Chapter 1 (3 images)"])
+        self.assertEqual(zoom_updates, ["50%"])
+
     def test_counter_uses_the_last_visible_page(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.pages = [object(), object(), object()]

@@ -67,6 +67,7 @@ class ComicStrip:
     PRELOAD_DISTANCE = 2
     CONTROL_MASK = 0x0004
     PAGE_GAP_SIZE = 12
+    is_folder = True
 
     def __init__(
         self,
@@ -82,11 +83,13 @@ class ComicStrip:
         remember_folder: bool = True,
         prevent_image_upscale: bool = False,
         stop_at_fit_width: bool = True,
+        is_folder: bool = True,
     ) -> None:
         self.window = window
         self.canvas: tk.Canvas = window["-CANVAS-"].TKCanvas
         self.pages = pages
         self.folder = folder
+        self.is_folder = is_folder
         self.desktop_width = desktop_width
         self.viewport_width = max(1, self.canvas.winfo_width())
         self.viewport_height = max(1, self.canvas.winfo_height())
@@ -720,12 +723,19 @@ class ComicStrip:
         self.paint(priority_y=anchor)
         self._show_status()
 
-    def open_bookshelf(self, pages: list[ComicPage], folder: Path) -> None:
+    def open_bookshelf(
+        self, pages: list[ComicPage], folder: Path, *, is_folder: bool = True
+    ) -> None:
         self.stop_zooming()
         zoom_level = self.reading_zoom_level
         self.pages = pages
         self.folder = folder
-        self.window.set_title(reader_window_title(folder))
+        self.is_folder = is_folder
+        self.window.set_title(
+            reader_window_title(folder)
+            if is_folder
+            else reader_window_title(folder, len(pages))
+        )
         self._refresh_spread_analysis()
         self.original_size = False
         initial_width = max(1, round(self.viewport_width * self.START_WIDTH_RATIO))
@@ -912,7 +922,13 @@ class ComicStrip:
             zoom = "Original"
         else:
             zoom = f"{round(100 * self.strip_width / max(1, self.viewport_width))}%"
-        self.window["-STATUS-"].update(self.folder.name)
+        if self.is_folder:
+            status_text = self.folder.name or str(self.folder)
+        else:
+            count = len(self.pages)
+            count_label = "1 image" if count == 1 else f"{count} images"
+            status_text = f"{self.folder.name or str(self.folder)} ({count_label})"
+        self.window["-STATUS-"].update(status_text)
         self.window[ZOOM_STATUS_KEY].update(zoom)
 
     def _show_page_counter(self) -> None:

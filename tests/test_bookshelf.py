@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from comic_scroll_reader.files.bookshelf import natural_file_key, scan_bookshelf
+from comic_scroll_reader.files.bookshelf import load_pages, natural_file_key, scan_bookshelf
 
 
 class BookshelfTests(unittest.TestCase):
@@ -53,6 +53,26 @@ class BookshelfTests(unittest.TestCase):
             [(800, 1_200)],
         )
         image.load.assert_not_called()
+
+    def test_load_pages_from_file_list_with_natural_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            p10 = folder / "10.png"
+            p2 = folder / "2.png"
+            p1 = folder / "1.png"
+            txt = folder / "info.txt"
+            Image.new("RGB", (100, 200)).save(p10)
+            Image.new("RGB", (20, 30)).save(p2)
+            Image.new("RGB", (10, 15)).save(p1)
+            txt.write_text("not an image", encoding="utf-8")
+
+            pages = load_pages([p10, p2, txt, p1])
+
+        self.assertEqual([page.file.name for page in pages], ["1.png", "2.png", "10.png"])
+        self.assertEqual(
+            [(page.native_width, page.native_height) for page in pages],
+            [(10, 15), (20, 30), (100, 200)],
+        )
 
 
 if __name__ == "__main__":

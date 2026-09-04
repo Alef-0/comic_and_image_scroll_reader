@@ -145,6 +145,43 @@ class ApplicationArgumentsTests(unittest.TestCase):
             {"dual_page": True, "zoom_level": "90"}
         )
 
+    def test_read_arguments_with_multiple_images(self) -> None:
+        arguments = read_arguments(["page1.png", "page2.png"])
+
+        self.assertIsNone(arguments.folder)
+        self.assertEqual(
+            arguments.images, [Path("page1.png"), Path("page2.png")]
+        )
+
+    @patch("comic_scroll_reader.app.save_reading_progress")
+    def test_disabled_progress_save_for_image_set(
+        self, save_progress_mock
+    ) -> None:
+        reader = SimpleNamespace(
+            folder=Path("/comics/Chapter 1"),
+            current_page_number=12,
+            remember_folder=True,
+            is_folder=False,
+        )
+
+        _save_current_progress(reader)
+
+        save_progress_mock.assert_not_called()
+
+    @patch("comic_scroll_reader.app.progress_for_folder")
+    def test_offer_to_resume_never_called_for_image_set(
+        self, progress_mock
+    ) -> None:
+        reader = SimpleNamespace(
+            folder=Path("/comics/Chapter 1"),
+            remember_folder=True,
+            is_folder=False,
+        )
+
+        _offer_to_resume(reader)
+
+        progress_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

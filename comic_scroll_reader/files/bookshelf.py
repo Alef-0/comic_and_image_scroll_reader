@@ -1,5 +1,6 @@
-"""Find, inspect, and open comic pages from a directory."""
+"""Find, inspect, and open comic pages from a directory or file list."""
 
+from collections.abc import Iterable
 from pathlib import Path
 import re
 import sys
@@ -43,13 +44,14 @@ def open_page(file: Path) -> Image.Image | None:
         return None
 
 
-def scan_bookshelf(folder: Path) -> list[ComicPage]:
-    """Return image pages with readable metadata in natural filename order."""
+def load_pages(files: Iterable[Path]) -> list[ComicPage]:
+    """Return image pages from a collection of files in natural filename order."""
+    unique_files = {file.resolve(): file for file in files if file.is_file()}
     candidates = sorted(
         (
             file
-            for file in folder.iterdir()
-            if file.is_file() and file.suffix.casefold() in IMAGE_SUFFIXES
+            for file in unique_files.values()
+            if file.suffix.casefold() in IMAGE_SUFFIXES
         ),
         key=natural_file_key,
     )
@@ -65,3 +67,9 @@ def scan_bookshelf(folder: Path) -> list[ComicPage]:
         if width > 0 and height > 0:
             pages.append(ComicPage(file, width, height))
     return pages
+
+
+def scan_bookshelf(folder: Path) -> list[ComicPage]:
+    """Return image pages with readable metadata in natural filename order."""
+    return load_pages(folder.iterdir())
+

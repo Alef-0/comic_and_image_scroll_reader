@@ -28,6 +28,7 @@ ZOOM_STATUS_KEY = "-ZOOM-STATUS-"
 ZOOM_OUT_KEY = "-ZOOM-OUT-"
 ZOOM_IN_KEY = "-ZOOM-IN-"
 PAGE_NUMBER_INPUT_KEY = "-PAGE-NUMBER-"
+READER_DROP_EVENT_KEY = "-READER-DROPPED-"
 COLLAPSIBLE_GROUPS = {
     "-IMAGE-SIZE-GROUP-": ("Image size", "-IMAGE-SIZE-GROUP-CONTENT-"),
     "-PAGE-LAYOUT-GROUP-": ("Page layout", "-PAGE-LAYOUT-GROUP-CONTENT-"),
@@ -158,9 +159,37 @@ def compact_buttons(
         element.Widget.configure(padx=1, pady=0)
 
 
-def reader_window_title(folder: Path) -> str:
-    """Return the reader title with the active folder clearly identified."""
-    return f"Comic and Scroll Reader — {folder.name or folder}"
+def reader_window_title(folder: Path, count: int | None = None) -> str:
+    """Return the reader title with the active folder or image set clearly identified."""
+    base = folder.name or str(folder)
+    if count is not None:
+        count_label = "1 image" if count == 1 else f"{count} images"
+        return f"Comic and Scroll Reader — {base} ({count_label})"
+    return f"Comic and Scroll Reader — {base}"
+
+
+def enable_window_drop(
+    window: sg.Window,
+    target_key: str = "-CANVAS-",
+    event_key: str = READER_DROP_EVENT_KEY,
+) -> bool:
+    """Register an element as an operating-system file drop target."""
+    try:
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+
+        TkinterDnD._require(window.TKroot)
+        element = window[target_key]
+        widget = getattr(element, "TKCanvas", getattr(element, "Widget", None))
+        if widget is None:
+            return False
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind(
+            "<<Drop>>",
+            lambda event: window.write_event_value(event_key, event.data),
+        )
+    except (ImportError, RuntimeError, TypeError, tk.TclError):
+        return False
+    return True
 
 
 def _collapsible_group(
