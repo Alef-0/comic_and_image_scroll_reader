@@ -13,6 +13,7 @@ from ..core.models import ComicPage
 IMAGE_SUFFIXES = frozenset(
     {".bmp", ".gif", ".jpeg", ".jpg", ".jp2", ".png", ".tif", ".tiff", ".webp"}
 )
+PDF_SUFFIXES = frozenset({".pdf"})
 
 
 def natural_file_key(file: Path) -> list[tuple[int, object]]:
@@ -37,11 +38,16 @@ def display_size(image: Image.Image) -> tuple[int, int]:
 
 def open_page(file: Path) -> Image.Image | None:
     """Decode a page, correct its orientation, and detach it from the file."""
+    if not file.is_file():
+        from .pdf_reader import ensure_page_available
+
+        ensure_page_available(file)
     try:
         with Image.open(file) as source:
             return ImageOps.exif_transpose(source).convert("RGB").copy()
     except (OSError, ValueError, UnidentifiedImageError):
         return None
+
 
 
 def load_pages(files: Iterable[Path]) -> list[ComicPage]:

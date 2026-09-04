@@ -182,6 +182,15 @@ class ApplicationArgumentsTests(unittest.TestCase):
 
         progress_mock.assert_not_called()
 
+    def test_read_arguments_with_pdf(self) -> None:
+        arguments = read_arguments(["comic.pdf"])
+
+        self.assertIn(arguments.folder, (Path("comic.pdf"), None))
+        if arguments.folder is None:
+            self.assertEqual(arguments.images, [Path("comic.pdf")])
+        else:
+            self.assertEqual(arguments.folder, Path("comic.pdf"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,7 +20,7 @@ from ..core.layout import (
 )
 from ..core.memory import MemoryShelf
 from ..core.models import ComicPage, PagePosition
-from ..files.bookshelf import open_page
+from ..files.bookshelf import PDF_SUFFIXES, open_page
 from ..imaging.image_resizer import ImageResizer
 from .window import (
     CANVAS_COLOR,
@@ -926,7 +926,10 @@ class ComicStrip:
             status_text = self.folder.name or str(self.folder)
         else:
             count = len(self.pages)
-            count_label = "1 image" if count == 1 else f"{count} images"
+            if self.folder.suffix.casefold() in PDF_SUFFIXES:
+                count_label = "1 page" if count == 1 else f"{count} pages"
+            else:
+                count_label = "1 image" if count == 1 else f"{count} images"
             status_text = f"{self.folder.name or str(self.folder)} ({count_label})"
         self.window["-STATUS-"].update(status_text)
         self.window[ZOOM_STATUS_KEY].update(zoom)

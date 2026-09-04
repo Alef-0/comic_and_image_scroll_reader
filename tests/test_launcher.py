@@ -8,6 +8,7 @@ from comic_scroll_reader.ui.launcher import (
     config_from_values,
     dropped_folder,
     dropped_images,
+    dropped_pdf,
     dropped_target,
 )
 
@@ -110,6 +111,25 @@ class LauncherTests(unittest.TestCase):
             txt.touch()
 
             self.assertIsNone(dropped_target(str(txt), FakeRoot()))
+
+    def test_dropped_pdf_returns_pdf_file(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            pdf = Path(folder) / "comic.pdf"
+            pdf.touch()
+
+            self.assertEqual(dropped_pdf(str(pdf), FakeRoot()), pdf)
+
+    def test_dropped_target_returns_pdf_when_no_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            pdf = root / "comic.pdf"
+            img = root / "cover.png"
+            pdf.touch()
+            img.touch()
+
+            target = dropped_target(f"{pdf}|{img}", FakeRoot())
+
+        self.assertEqual(target, pdf)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ import tkinter as tk
 
 import FreeSimpleGUI as sg
 
+from ..files.bookshelf import PDF_SUFFIXES
+
 
 FALLBACK_DESKTOP_SIZE = (1280, 720)
 WINDOWED_SIZE_RATIO = (0.75, 0.80)
@@ -163,7 +165,10 @@ def reader_window_title(folder: Path, count: int | None = None) -> str:
     """Return the reader title with the active folder or image set clearly identified."""
     base = folder.name or str(folder)
     if count is not None:
-        count_label = "1 image" if count == 1 else f"{count} images"
+        if folder.suffix.casefold() in PDF_SUFFIXES:
+            count_label = "1 page" if count == 1 else f"{count} pages"
+        else:
+            count_label = "1 image" if count == 1 else f"{count} images"
         return f"Comic and Scroll Reader — {base} ({count_label})"
     return f"Comic and Scroll Reader — {base}"
 

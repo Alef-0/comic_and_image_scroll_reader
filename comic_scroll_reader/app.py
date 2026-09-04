@@ -8,7 +8,8 @@ import tkinter as tk
 import FreeSimpleGUI as sg
 
 from .config import CONFIG_PATH, load_config, save_config
-from .files.bookshelf import load_pages, scan_bookshelf
+from .files.bookshelf import PDF_SUFFIXES, load_pages, scan_bookshelf
+from .files.pdf_reader import PdfBookshelf
 from .reading_progress import (
     ReadingProgress,
     progress_for_folder,
@@ -220,21 +221,46 @@ def run_reader(
     if active_target is None:
         raise ValueError("A folder or image list must be provided.")
 
+    active_pdf: PdfBookshelf | None = None
     is_folder = True
     if isinstance(active_target, list):
-        pages = load_pages(active_target)
-        if not pages:
-            sg.popup_error("No readable supported images were found.")
-            return 1
-        active_folder = pages[0].file.parent
-        is_folder = False
+        if (
+            len(active_target) == 1
+            and active_target[0].is_file()
+            and active_target[0].suffix.casefold() in PDF_SUFFIXES
+        ):
+            try:
+                active_pdf = PdfBookshelf(active_target[0])
+            except Exception as error:
+                sg.popup_error(f"Unable to open PDF:\n{error}")
+                return 1
+            pages = active_pdf.pages
+            active_folder = active_target[0]
+            is_folder = False
+        else:
+            pages = load_pages(active_target)
+            if not pages:
+                sg.popup_error("No readable supported images were found.")
+                return 1
+            active_folder = pages[0].file.parent
+            is_folder = False
     elif active_target.is_file():
-        pages = load_pages([active_target])
-        if not pages:
-            sg.popup_error(f"No readable supported images were found in:\n{active_target}")
-            return 1
-        active_folder = active_target.parent
-        is_folder = False
+        if active_target.suffix.casefold() in PDF_SUFFIXES:
+            try:
+                active_pdf = PdfBookshelf(active_target)
+            except Exception as error:
+                sg.popup_error(f"Unable to open PDF:\n{error}")
+                return 1
+            pages = active_pdf.pages
+            active_folder = active_target
+            is_folder = False
+        else:
+            pages = load_pages([active_target])
+            if not pages:
+                sg.popup_error(f"No readable supported images were found in:\n{active_target}")
+                return 1
+            active_folder = active_target.parent
+            is_folder = False
     else:
         if not active_target.is_dir():
             sg.popup_error(f"This is not a folder:\n{active_target}")
@@ -245,6 +271,7 @@ def run_reader(
             return 1
         active_folder = active_target
         is_folder = True
+
 
     config = load_config()
     dual_page = dual_page or config["dual_page"]
@@ -338,8 +365,24 @@ def run_reader(
                 )
                 if dropped is None:
                     sg.popup_error(
-                        "Drop a folder or images containing comic pages."
+                        "Drop a folder, PDF, or images containing comic pages."
                     )
+                    continue
+                if (
+                    isinstance(dropped, Path)
+                    and dropped.is_file()
+                    and dropped.suffix.casefold() in PDF_SUFFIXES
+                ):
+                    try:
+                        new_pdf = PdfBookshelf(dropped)
+                    except Exception as error:
+                        sg.popup_error(f"Unable to open PDF:\n{error}")
+                        continue
+                    _save_current_progress(reader)
+                    if active_pdf is not None:
+                        active_pdf.close()
+                    active_pdf = new_pdf
+                    reader.open_bookshelf(new_pdf.pages, dropped, is_folder=False)
                     continue
                 if isinstance(dropped, list):
                     new_pages = load_pages(dropped)
@@ -349,6 +392,9 @@ def run_reader(
                         )
                         continue
                     _save_current_progress(reader)
+                    if active_pdf is not None:
+                        active_pdf.close()
+                        active_pdf = None
                     reader.open_bookshelf(
                         new_pages, new_pages[0].file.parent, is_folder=False
                     )
@@ -360,6 +406,9 @@ def run_reader(
                         )
                         continue
                     _save_current_progress(reader)
+                    if active_pdf is not None:
+                        active_pdf.close()
+                        active_pdf = None
                     reader.open_bookshelf(new_pages, dropped, is_folder=True)
                     _offer_to_resume(reader)
                 continue
@@ -402,6 +451,9 @@ def run_reader(
             if action is not None:
                 action()
     finally:
+        if active_pdf is not None:
+            active_pdf.close()
+            active_pdf = None
         if reader is not None:
             _save_global_zoom(reader)
             _save_current_progress(reader)
@@ -414,9 +466,22 @@ def main(argv: list[str] | None = None) -> int:
     arguments = read_arguments(argv)
     target: Path | list[Path] | None = None
     if getattr(arguments, "images", None):
-        target = [path.expanduser() for path in arguments.images]
+        if (
+            len(arguments.images) == 1
+            and arguments.images[0].suffix.casefold() in PDF_SUFFIXES
+        ):
+            target = arguments.images[0].expanduser()
+        else:
+            target = [path.expanduser() for path in arguments.images]
     elif arguments.folder:
-        target = arguments.folder.expanduser()
+        folder_expanded = arguments.folder.expanduser()
+        if (
+            folder_expanded.is_file()
+            and folder_expanded.suffix.casefold() in PDF_SUFFIXES
+        ):
+            target = folder_expanded
+        else:
+            target = folder_expanded
     else:
         target = run_launcher()
 
@@ -432,4 +497,5 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         target = run_launcher()
     return 0
+
 

@@ -96,6 +96,16 @@ class WindowControlTests(unittest.TestCase):
             "Comic and Scroll Reader — Chapter 12 (5 images)",
         )
 
+    def test_reader_title_for_pdf(self) -> None:
+        self.assertEqual(
+            reader_window_title(Path("/comics/Chapter 12.pdf"), 1),
+            "Comic and Scroll Reader — Chapter 12.pdf (1 page)",
+        )
+        self.assertEqual(
+            reader_window_title(Path("/comics/Chapter 12.pdf"), 32),
+            "Comic and Scroll Reader — Chapter 12.pdf (32 pages)",
+        )
+
     def test_group_starts_collapsed_and_toggles_open_and_closed(self) -> None:
         content = FakeElement({"expanded": False})
         header = FakeHeader()
