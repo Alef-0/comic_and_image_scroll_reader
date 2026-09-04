@@ -1,4 +1,4 @@
-"""Fast, thread-safe PDF page inspection, background caching, and on-demand rendering."""
+"""Thread-safe PDF inspection and on-demand full-page or cropped rendering."""
 
 import atexit
 from collections.abc import Callable
@@ -9,24 +9,40 @@ import threading
 from typing import ClassVar
 
 import pypdfium2 as pdfium
+from PIL import Image
 
+from ..core.memory import trim_memory
 from ..core.models import ComicPage
 
 
 _PAGE_PROVIDERS: dict[Path, Callable[[], None]] = {}
+_REGION_PROVIDERS: dict[
+    Path,
+    Callable[[tuple[float, float, float, float], tuple[int, int]], Image.Image | None],
+] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
-def register_page_provider(file: Path, provider: Callable[[], None]) -> None:
-    """Register an on-demand generator for a page image that has not been written yet."""
+def register_page_provider(
+    file: Path,
+    provider: Callable[[], None],
+    region_provider: Callable[
+        [tuple[float, float, float, float], tuple[int, int]], Image.Image | None
+    ],
+) -> None:
+    """Register full-page and cropped renderers for one virtual PDF page."""
     with _REGISTRY_LOCK:
-        _PAGE_PROVIDERS[file.resolve()] = provider
+        key = file.resolve()
+        _PAGE_PROVIDERS[key] = provider
+        _REGION_PROVIDERS[key] = region_provider
 
 
 def unregister_page_provider(file: Path) -> None:
     """Remove a page generator from the registry."""
     with _REGISTRY_LOCK:
-        _PAGE_PROVIDERS.pop(file.resolve(), None)
+        key = file.resolve()
+        _PAGE_PROVIDERS.pop(key, None)
+        _REGION_PROVIDERS.pop(key, None)
 
 
 def ensure_page_available(file: Path) -> None:
@@ -40,53 +56,59 @@ def ensure_page_available(file: Path) -> None:
         provider()
 
 
-class PdfBookshelf:
-    """Inspect and extract pages from a PDF file with background and on-demand rendering."""
+def render_registered_page_region(
+    file: Path,
+    source_box: tuple[float, float, float, float],
+    target_size: tuple[int, int],
+) -> Image.Image | None:
+    """Render a cropped virtual PDF page, or return None when it is not registered."""
+    with _REGISTRY_LOCK:
+        provider = _REGION_PROVIDERS.get(file.resolve())
+    if provider is None:
+        return None
+    return provider(source_box, target_size)
 
-    DEFAULT_SCALE: ClassVar[float] = 2.0
+
+class PdfBookshelf:
+    """Inspect PDF pages and render full pages or display regions on demand."""
+
+    DEFAULT_SCALE: ClassVar[float] = 1.5
     JPEG_QUALITY: ClassVar[int] = 85
 
     def __init__(self, pdf_path: Path, scale: float = DEFAULT_SCALE) -> None:
         self.pdf_path = pdf_path.expanduser().resolve()
         self.scale = scale
-        self._doc = pdfium.PdfDocument(self.pdf_path)
-        self.page_count = len(self._doc)
         self._temp_dir = tempfile.TemporaryDirectory(prefix="csr_pdf_")
         self.cache_dir = Path(self._temp_dir.name)
         self._lock = threading.Lock()
         self._closed = False
-        self._worker_thread: threading.Thread | None = None
 
         self.pages: list[ComicPage] = []
         self._page_files: list[Path] = []
-        self._init_pages()
+        inspection_document = pdfium.PdfDocument(self.pdf_path)
+        try:
+            self.page_count = len(inspection_document)
+            self._init_pages(inspection_document)
+        finally:
+            inspection_document.close()
 
         atexit.register(self.close)
 
-    def _init_pages(self) -> None:
+    def _init_pages(self, document: pdfium.PdfDocument) -> None:
         for i in range(self.page_count):
-            with self._lock:
-                page = self._doc[i]
-                w_pt, h_pt = page.get_size()
+            w_pt, h_pt = document.get_page_size(i)
             width = max(1, round(w_pt * self.scale))
             height = max(1, round(h_pt * self.scale))
             page_file = self.cache_dir / f"page_{i + 1:04d}.jpg"
             self._page_files.append(page_file)
             self.pages.append(ComicPage(page_file, width, height))
-            register_page_provider(page_file, lambda idx=i: self._render_page_on_demand(idx))
-
-        # Render page 1 synchronously so the reader window opens with it immediately
-        if self.page_count > 0:
-            self._render_page_on_demand(0)
-
-        # Start background daemon thread to progressively render remaining pages
-        if self.page_count > 1:
-            self._worker_thread = threading.Thread(
-                target=self._background_extract,
-                name=f"PdfExtract-{self.pdf_path.name}",
-                daemon=True,
+            register_page_provider(
+                page_file,
+                lambda idx=i: self._render_page_on_demand(idx),
+                lambda source_box, target_size, idx=i: self._render_page_region(
+                    idx, source_box, target_size
+                ),
             )
-            self._worker_thread.start()
 
     def _render_page_on_demand(self, index: int) -> None:
         if self._closed or index < 0 or index >= self.page_count:
@@ -98,46 +120,100 @@ class PdfBookshelf:
             if self._closed or target_path.is_file():
                 return
             temp_path = self.cache_dir / f".tmp_page_{index + 1:04d}.jpg"
+            document = pdfium.PdfDocument(self.pdf_path)
+            page = document[index]
             try:
-                page = self._doc[index]
-                image = page.render(scale=self.scale).to_pil()
-                image.save(temp_path, "JPEG", quality=self.JPEG_QUALITY)
-                os.replace(temp_path, target_path)
+                bitmap = page.render(scale=self.scale, limit_image_cache=True)
+                try:
+                    image = bitmap.to_pil()
+                    try:
+                        image.save(temp_path, "JPEG", quality=self.JPEG_QUALITY)
+                        os.replace(temp_path, target_path)
+                    finally:
+                        image.close()
+                finally:
+                    bitmap.close()
             except Exception:
                 if temp_path.is_file():
                     temp_path.unlink(missing_ok=True)
                 raise
+            finally:
+                page.close()
+                document.close()
+        trim_memory()
 
-    def _background_extract(self) -> None:
-        for i in range(1, self.page_count):
+    def _render_page_region(
+        self,
+        index: int,
+        source_box: tuple[float, float, float, float],
+        target_size: tuple[int, int],
+    ) -> Image.Image | None:
+        """Rasterize only the requested display region directly from PDFium."""
+        if self._closed or index < 0 or index >= self.page_count:
+            return None
+        native_width = self.pages[index].native_width
+        native_height = self.pages[index].native_height
+        left, top, right, bottom = source_box
+        left = min(max(left, 0.0), float(native_width))
+        right = min(max(right, left), float(native_width))
+        top = min(max(top, 0.0), float(native_height))
+        bottom = min(max(bottom, top), float(native_height))
+        target_width, target_height = target_size
+        if right <= left or bottom <= top or target_width < 1 or target_height < 1:
+            return None
+
+        render_scale = self.scale * target_width / (right - left)
+        crop = (
+            left / self.scale,
+            (native_height - bottom) / self.scale,
+            (native_width - right) / self.scale,
+            top / self.scale,
+        )
+        with self._lock:
             if self._closed:
-                break
-            target_path = self._page_files[i]
-            if not target_path.is_file():
+                return None
+            document = pdfium.PdfDocument(self.pdf_path)
+            page = document[index]
+            try:
+                bitmap = page.render(
+                    scale=render_scale,
+                    crop=crop,
+                    limit_image_cache=True,
+                    rev_byteorder=True,
+                )
                 try:
-                    self._render_page_on_demand(i)
-                except Exception:
-                    if self._closed:
-                        break
+                    shared = bitmap.to_pil()
+                    try:
+                        rendered = shared.convert("RGB")
+                    finally:
+                        shared.close()
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+                document.close()
+
+        if rendered.size != target_size:
+            corrected = rendered.resize(target_size, Image.Resampling.BICUBIC)
+            rendered.close()
+            rendered = corrected
+        rendered.load()
+        trim_memory()
+        return rendered
 
     def close(self) -> None:
-        """Stop background worker, close PDF document, and clean up temporary directory."""
+        """Close PDF document and clean up temporary directory."""
         if self._closed:
             return
         self._closed = True
+        atexit.unregister(self.close)
         for page_file in self._page_files:
             unregister_page_provider(page_file)
-        if self._worker_thread is not None and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=0.5)
-        with self._lock:
-            try:
-                self._doc.close()
-            except Exception:
-                pass
         try:
             self._temp_dir.cleanup()
         except Exception:
             pass
+        trim_memory()
 
     def __enter__(self) -> "PdfBookshelf":
         return self
