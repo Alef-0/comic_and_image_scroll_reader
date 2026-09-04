@@ -688,7 +688,8 @@ class ComicStrip:
             self._schedule_zoom_cleanup()
             return
         direction, anchor = self._zoom_stash.popleft()
-        if not self._apply_zoom_step(direction, anchor):
+        has_more = bool(self._zoom_stash)
+        if not self._apply_zoom_step(direction, anchor, is_interactive=has_more):
             self._zoom_stash.clear()
             self._schedule_zoom_cleanup()
             return
@@ -711,7 +712,9 @@ class ComicStrip:
         self._zoom_cleanup_job = None
         self._schedule_memory_trim()
 
-    def _apply_zoom_step(self, direction: int, anchor: int) -> bool:
+    def _apply_zoom_step(
+        self, direction: int, anchor: int, is_interactive: bool = False
+    ) -> bool:
         maximum = self._maximum_strip_width()
         minimum = min(
             maximum,
@@ -719,9 +722,11 @@ class ComicStrip:
         )
         requested = round(self.strip_width * (self.ZOOM_FACTOR**direction))
         new_width = min(max(requested, minimum), maximum)
-        return self._set_strip_width(new_width, anchor)
+        return self._set_strip_width(new_width, anchor, is_interactive=is_interactive)
 
-    def _set_strip_width(self, new_width: int, anchor: int) -> bool:
+    def _set_strip_width(
+        self, new_width: int, anchor: int, is_interactive: bool = False
+    ) -> bool:
         was_original_size = self.original_size
         if new_width == self.strip_width and not was_original_size:
             return False
@@ -734,7 +739,7 @@ class ComicStrip:
         self.scroll_y = clamp_scroll(
             anchored_scroll, self.content_height, self.viewport_height
         )
-        self.paint(priority_y=anchor)
+        self.paint(priority_y=anchor, is_interactive=is_interactive)
         self._show_status()
         return True
 
@@ -961,7 +966,9 @@ class ComicStrip:
         )
         self.canvas_pages[page.file] = (item, photo, region_key)
 
-    def paint(self, priority_y: int | None = None) -> None:
+    def paint(
+        self, priority_y: int | None = None, is_interactive: bool = False
+    ) -> None:
         self._cancel_pending_work()
 
         first, last = visible_page_range(
@@ -1039,7 +1046,7 @@ class ComicStrip:
                 or async_renderer is None
             ):
                 self._render_page(index)
-            else:
+            elif not is_interactive:
                 cold_indices.append(index)
 
         if async_renderer is not None and cold_indices:
@@ -1061,7 +1068,8 @@ class ComicStrip:
         self._visible_range = (first, last)
         if hasattr(self, "_pending_render_indices"):
             self._pending_render_indices.clear()
-        self._schedule_neighbor_preload()
+        if not is_interactive:
+            self._schedule_neighbor_preload()
         self._sync_scrollbar()
         self._show_page_counter()
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the

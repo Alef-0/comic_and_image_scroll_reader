@@ -507,7 +507,46 @@ class ReaderViewTests(unittest.TestCase):
         # Async poll job should be scheduled on the canvas
         self.assertIsNotNone(reader._async_poll_job)
 
+    def test_two_phase_zoom_settled_dispatch(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        reader.strip_width = 100
+        reader.desktop_width = 1000
+        reader.MIN_WIDTH_RATIO = 0.1
+        reader.MAX_WIDTH_RATIO = 4.0
+        reader.ZOOM_FACTOR = 1.10
+        reader.ZOOM_STEP_DELAY_MS = 1
+        reader.ZOOM_IDLE_DELAY_MS = 400
+        reader.original_size = False
+        reader.viewport_height = 400
+        reader.positions = [PagePosition(0, 0, 100, 800)]
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.stop_at_fit_width = False
+        reader.prevent_image_upscale = False
+        reader.dual_page = False
+        reader._zoom_job = None
+        reader._zoom_cleanup_job = None
+        reader._render_job = None
+        reader._preload_job = None
+        reader._zoom_stash = deque([(1, 200), (1, 200)])
+        reader.pages = []
+        reader._arrange_strip = lambda: None
+        reader._show_status = lambda: None
+
+        paints: list[bool] = []
+        reader.paint = lambda priority_y=None, is_interactive=False: paints.append(is_interactive)
+
+        # Step 1: intermediate zoom (stash still has 1 item left) -> is_interactive=True
+        reader._apply_next_zoom_step()
+        self.assertEqual(paints, [True])
+
+        # Step 2: final zoom (stash becomes empty) -> is_interactive=False (settled dispatch)
+        reader._apply_next_zoom_step()
+        self.assertEqual(paints, [True, False])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
