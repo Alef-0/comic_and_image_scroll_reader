@@ -261,5 +261,3 @@ dpkg-deb --root-owner-group --build "$package_root" \
 
 echo "Debian package created at: $output_directory/$package_file"
 echo "Install it with: sudo apt install $output_directory/$package_file"
-
-

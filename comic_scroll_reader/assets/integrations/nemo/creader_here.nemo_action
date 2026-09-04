@@ -8,5 +8,3 @@ Extensions=any;
 
 Exec=comic-scroll-reader %P
 Quote=double
-
-

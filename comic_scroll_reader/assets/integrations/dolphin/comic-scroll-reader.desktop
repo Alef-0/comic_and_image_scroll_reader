@@ -1,5 +1,6 @@
 [Desktop Entry]
 Type=Service
+Name=Open in Comic and Scroll Reader
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
 MimeType=inode/directory;application/pdf;image/jpeg;image/png;image/webp;image/gif;image/bmp;image/tiff;
 Actions=openInCreader;

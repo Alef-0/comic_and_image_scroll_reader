@@ -29,4 +29,3 @@ comic_scroll_reader = [
     "assets/*.svg",
     "assets/integrations/**/*",
 ]
-

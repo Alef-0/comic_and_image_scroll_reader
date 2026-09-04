@@ -61,4 +61,3 @@ nuitka_options=(
 echo "Compressed binary created at: $project_directory/comic-scroll-reader"
 du -h "$project_directory/comic-scroll-reader"
 echo "Run it with: $project_directory/comic-scroll-reader"
-

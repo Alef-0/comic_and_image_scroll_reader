@@ -20,4 +20,3 @@ class ImageResizer:
         """Resize a Pillow image to the target size using the specified filter."""
         resample = cpu_filter if cpu_filter is not None else self.default_filter
         return image.resize(size, resample)
-
