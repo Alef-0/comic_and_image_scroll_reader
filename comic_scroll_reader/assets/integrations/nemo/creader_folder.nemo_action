@@ -1,0 +1,9 @@
+[Nemo Action]
+Name=Open folder in creader
+Comment=Open folder in creader
+Icon-Name=comic-scroll-reader
+Selection=s
+Extensions=dir;
+
+Exec=comic-scroll-reader %F
+Quote=double

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Service
+Name=Open in Comic and Scroll Reader
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory;application/pdf;image/jpeg;image/png;image/webp;image/gif;image/bmp;image/tiff;
+Actions=openInCreader;
+X-KDE-Priority=TopLevel
+
+[Desktop Action openInCreader]
+Name=Open in Comic Scroll Reader
+Icon=comic-scroll-reader
+Exec=comic-scroll-reader %U

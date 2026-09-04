@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ class FakeCanvas:
     def __init__(self) -> None:
         self.cancelled: list[str] = []
         self.jobs: list[tuple[str, object]] = []
+        self._next_id = 1
 
     def after(self, _delay: int, callback: object) -> str:
         job = f"job-{len(self.jobs)}"
@@ -21,6 +23,28 @@ class FakeCanvas:
 
     def after_cancel(self, job: str) -> None:
         self.cancelled.append(job)
+
+    def create_rectangle(self, *args: object, **kwargs: object) -> int:
+        item = self._next_id
+        self._next_id += 1
+        return item
+
+    def create_image(self, *args: object, **kwargs: object) -> int:
+        item = self._next_id
+        self._next_id += 1
+        return item
+
+    def coords(self, *args: object) -> None:
+        pass
+
+    def delete(self, *args: object) -> None:
+        pass
+
+    def tag_lower(self, *args: object) -> None:
+        pass
+
+    def update_idletasks(self) -> None:
+        pass
 
 
 class ReaderViewTests(unittest.TestCase):
@@ -42,6 +66,26 @@ class ReaderViewTests(unittest.TestCase):
         reader._show_status()
 
         self.assertEqual(status_updates, ["Chapter 1"])
+        self.assertEqual(zoom_updates, ["50%"])
+
+    def test_status_includes_image_count_when_not_folder(self) -> None:
+        status_updates: list[str] = []
+        zoom_updates: list[str] = []
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.original_size = False
+        reader.strip_width = 500
+        reader.viewport_width = 1_000
+        reader.folder = Path("/pictures/Chapter 1")
+        reader.pages = [object(), object(), object()]
+        reader.is_folder = False
+        reader.window = {
+            "-STATUS-": SimpleNamespace(update=status_updates.append),
+            "-ZOOM-STATUS-": SimpleNamespace(update=zoom_updates.append),
+        }
+
+        reader._show_status()
+
+        self.assertEqual(status_updates, ["Chapter 1 (3 images)"])
         self.assertEqual(zoom_updates, ["50%"])
 
     def test_counter_uses_the_last_visible_page(self) -> None:
@@ -346,6 +390,8 @@ class ReaderViewTests(unittest.TestCase):
         reader = ComicStrip.__new__(ComicStrip)
         reader.canvas = FakeCanvas()
         reader._zoom_job = "zoom"
+        reader._zoom_cleanup_job = "cleanup"
+        reader._memory_trim_job = None
         reader._render_job = "render"
         reader._preload_job = "preload"
         reader._zoom_stash = deque([(1, 100), (1, 100)])
@@ -354,10 +400,472 @@ class ReaderViewTests(unittest.TestCase):
 
         reader.stop_zooming()
 
-        self.assertEqual(reader.canvas.cancelled, ["zoom", "render", "preload"])
+        self.assertEqual(reader.canvas.cancelled, ["zoom", "cleanup", "render", "preload"])
         self.assertEqual(list(reader._zoom_stash), [])
         self.assertEqual(reader._pending_render_indices, [])
         self.assertEqual(reader._pending_preload_indices, [])
+
+    def test_paint_evicts_stale_raw_photos_outside_viewport(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.IMMEDIATE_RENDER_COUNT = 2
+        reader.RENDER_STEP_DELAY_MS = 1
+        reader.PRELOAD_DISTANCE = 2
+        reader.PRELOAD_DELAY_MS = 150
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 400
+        reader.pan_x = 0
+        reader.canvas = FakeCanvas()
+        reader.canvas.coords = lambda *args: None
+        reader.canvas.delete = lambda *args: None
+        reader.canvas.tag_lower = lambda *args: None
+        reader.canvas.update_idletasks = lambda: None
+        reader.canvas_pages = {}
+        reader._cancel_pending_work = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader._render_page = lambda idx: None
+
+        # 10 pages, each 100px tall
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(10)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(10)]
+
+        # Ready photos with keys for pages 0, 2, 4, 5, 8, 9
+        reader.ready_photos = MemoryShelf[tuple[Path, int, int, int, int, int, int], object](
+            100, lambda _k, _v: 1
+        )
+        for i in [0, 2, 4, 5, 8, 9]:
+            reader.ready_photos.store(
+                (reader.pages[i].file, 100, 100, 0, 0, 100, 100), f"photo_{i}"
+            )
+
+        # scroll_y=400 and height=200 covers pages 4 and 5.
+        # Raw expansion is strictly viewport-only
+        reader.paint()
+
+        # Pages 0, 2, 8, 9 are outside viewport [4, 6) and must be evicted
+        for index in (0, 2, 8, 9):
+            key = (reader.pages[index].file, 100, 100, 0, 0, 100, 100)
+            self.assertIsNone(reader.ready_photos.get(key))
+
+        # Pages 4 and 5 are within viewport [4, 6) and must be retained
+        self.assertEqual(
+            reader.ready_photos.get((reader.pages[4].file, 100, 100, 0, 0, 100, 100)), "photo_4"
+        )
+        self.assertEqual(
+            reader.ready_photos.get((reader.pages[5].file, 100, 100, 0, 0, 100, 100)), "photo_5"
+        )
+
+    def test_zoomed_region_is_bounded_to_viewport_plus_overscan(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 960
+        reader.viewport_height = 1_006
+        reader.pan_x = 0
+        reader.scroll_y = 5_000
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        page = ComicPage(Path("page.webp"), 4_970, 6_992)
+        position = PagePosition(-1_440, 0, 3_840, 5_402)
+
+        key = reader._region_key(page, position)
+
+        self.assertIsNotNone(key)
+        maximum_extra = 2 * reader.REGION_OVERSCAN + reader.REGION_GRANULARITY - 1
+        self.assertLessEqual(key[5], 960 + maximum_extra)
+        self.assertLessEqual(key[6], 1_006 + maximum_extra)
+        self.assertLess(key[5] * key[6] * 4, 7 * 1024 * 1024)
+
+    def test_paint_dispatches_cold_pages_to_async_renderer(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+        from comic_scroll_reader.imaging.async_renderer import RenderResult
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        reader.canvas.coords = lambda *args: None
+        reader.canvas.delete = lambda *args: None
+        reader.canvas.tag_lower = lambda *args: None
+        reader.canvas.update_idletasks = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.canvas_pages = {}
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(4)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(4)]
+        reader._render_generation = 1
+        reader._async_poll_job = None
+
+        submitted_jobs: list[dict] = []
+        mock_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted_jobs.append(kwargs) or True,
+            has_pending_work=True,
+            get_results=lambda: [],
+            cancel_all=lambda: None,
+        )
+        reader.async_renderer = mock_renderer
+
+        # paint covers pages 0 and 1
+        reader.paint()
+
+        # Pages 1 and 0 are cold and must be submitted to async_renderer (page 1 is at anchor y=100)
+        self.assertEqual(len(submitted_jobs), 3)  # 2 visible + 1 preload neighbor
+        self.assertEqual(submitted_jobs[0]["page_file"], Path("p1.png"))
+        self.assertEqual(submitted_jobs[0]["priority"], 0)
+        self.assertEqual(submitted_jobs[1]["page_file"], Path("p0.png"))
+        self.assertEqual(submitted_jobs[1]["priority"], 1)
+        # Preload for neighbor page 2
+        self.assertEqual(submitted_jobs[2]["page_file"], Path("p2.png"))
+        self.assertEqual(submitted_jobs[2]["priority"], 10)
+
+        # Async poll job should be scheduled on the canvas
+        self.assertIsNotNone(reader._async_poll_job)
+
+    def test_two_phase_zoom_settled_dispatch(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        reader.strip_width = 100
+        reader.desktop_width = 1000
+        reader.MIN_WIDTH_RATIO = 0.1
+        reader.MAX_WIDTH_RATIO = 4.0
+        reader.ZOOM_FACTOR = 1.10
+        reader.ZOOM_STEP_DELAY_MS = 1
+        reader.ZOOM_IDLE_DELAY_MS = 400
+        reader.original_size = False
+        reader.viewport_height = 400
+        reader.positions = [PagePosition(0, 0, 100, 800)]
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.stop_at_fit_width = False
+        reader.prevent_image_upscale = False
+        reader.dual_page = False
+        reader._zoom_job = None
+        reader._zoom_cleanup_job = None
+        reader._render_job = None
+        reader._preload_job = None
+        reader._zoom_stash = deque([(1, 200), (1, 200)])
+        reader.pages = []
+        reader._arrange_strip = lambda: None
+        reader._show_status = lambda: None
+
+        paints: list[bool] = []
+        reader.paint = lambda priority_y=None, is_interactive=False: paints.append(is_interactive)
+
+        # Step 1: intermediate zoom (stash still has 1 item left) -> is_interactive=True
+        reader._apply_next_zoom_step()
+        self.assertEqual(paints, [True])
+
+        # Step 2: final zoom (stash becomes empty) -> is_interactive=False (settled dispatch)
+        reader._apply_next_zoom_step()
+        self.assertEqual(paints, [True, False])
+
+    def test_paint_creates_and_evicts_placeholder_zones(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        created_rects: list[tuple] = []
+        deleted_items: list[int] = []
+
+        reader.canvas = FakeCanvas()
+        reader.canvas.create_rectangle = lambda *args, **kwargs: created_rects.append(args) or len(created_rects)
+        reader.canvas.delete = lambda item: deleted_items.append(item)
+        reader._cancel_pending_work = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader._render_page = lambda idx: None
+        reader.canvas_pages = {}
+        reader.canvas_zones = {}
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(4)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(4)]
+
+        # Viewport covers pages 0 and 1
+        reader.paint()
+        self.assertEqual(len(reader.canvas_zones), 2)
+        self.assertIn(Path("p0.png"), reader.canvas_zones)
+        self.assertIn(Path("p1.png"), reader.canvas_zones)
+
+        # Scroll to pages 2 and 3 -> pages 0 and 1 zones must be evicted
+        reader.scroll_y = 200
+        reader.paint()
+        self.assertEqual(len(reader.canvas_zones), 2)
+        self.assertIn(Path("p2.png"), reader.canvas_zones)
+        self.assertIn(Path("p3.png"), reader.canvas_zones)
+        self.assertNotIn(Path("p0.png"), reader.canvas_zones)
+        self.assertNotIn(Path("p1.png"), reader.canvas_zones)
+        self.assertEqual(len(deleted_items), 2)
+
+    def test_thumbnail_cache_rejects_cropped_regions(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.page_thumbnails = {}
+        page_file = Path("tall-page.png")
+        rendered = Image.new("RGB", (100, 200), (20, 30, 40))
+        try:
+            cropped_key = (page_file, 100, 800, 0, 200, 100, 200)
+            reader._update_thumbnail(page_file, rendered, cropped_key)
+            self.assertNotIn(page_file, reader.page_thumbnails)
+
+            full_key = (page_file, 100, 200, 0, 0, 100, 200)
+            reader._update_thumbnail(page_file, rendered, full_key)
+            self.assertIn(page_file, reader.page_thumbnails)
+            reader.page_thumbnails[page_file].close()
+        finally:
+            rendered.close()
+
+    def test_cached_neighbors_do_not_restart_async_polling(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(3)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(3)]
+        reader._visible_range = (1, 2)
+        reader._pending_preload_indices = []
+        reader._async_poll_job = None
+        reader._render_generation = 1
+        reader._failed_regions = {}
+        reader.PRELOAD_DISTANCE = 1
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader._region_key = lambda page, _position, vertical_edge=None: (
+            page.file,
+            100,
+            100,
+            0,
+            0,
+            100,
+            100,
+        )
+
+        for index in (0, 2):
+            key = reader._region_key(reader.pages[index], reader.positions[index])
+            reader.drawn_webp_cache.store(key, b"cached")
+
+        submitted = []
+        reader.async_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted.append(kwargs) or True,
+            has_pending_work=False,
+        )
+
+        reader._schedule_neighbor_preload()
+
+        self.assertEqual(submitted, [])
+        self.assertIsNone(reader._async_poll_job)
+
+    def test_scroll_retains_overlapping_crisp_region_until_replacement(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        created_images = []
+        reader.canvas.create_image = (
+            lambda *args, **kwargs: created_images.append((args, kwargs)) or 2
+        )
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.canvas_zones = {}
+        reader.page_thumbnails = {}
+        reader._preview_pages = set()
+        reader._failed_regions = {}
+        reader._render_generation = 1
+        reader._async_poll_job = None
+        reader._render_job = None
+        reader._preload_job = None
+        reader._pending_render_indices = []
+        reader._pending_preload_indices = []
+
+        page_file = Path("tall-page.png")
+        page = ComicPage(page_file, 100, 1000)
+        position = PagePosition(0, 0, 100, 1000)
+        reader.pages = [page]
+        reader.positions = [position]
+        old_key = reader._region_key(page, position)
+        reader.canvas_pages = {page_file: (1, object(), old_key)}
+
+        submitted = []
+        reader.async_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted.append(kwargs) or True,
+            has_pending_work=True,
+            cancel_all=lambda: None,
+        )
+
+        reader.scroll_y = 300
+        new_key = reader._region_key(page, position)
+        self.assertNotEqual(old_key, new_key)
+        self.assertTrue(reader._regions_overlap_at_same_scale(old_key, new_key))
+
+        reader.paint()
+
+        self.assertEqual(created_images, [])
+        self.assertEqual(reader.canvas_pages[page_file][2], old_key)
+        self.assertNotIn(page_file, reader._preview_pages)
+        self.assertEqual(submitted[0]["region_key"], new_key)
+
+    def test_identical_blurred_preview_is_reused_during_fast_scroll(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        created_images = []
+        reader.canvas.create_image = (
+            lambda *args, **kwargs: created_images.append((args, kwargs)) or 2
+        )
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.canvas_zones = {}
+        reader.page_thumbnails = {}
+        reader._failed_regions = {}
+        reader._render_generation = 1
+        reader._async_poll_job = None
+        reader._render_job = None
+        reader._preload_job = None
+        reader._pending_render_indices = []
+        reader._pending_preload_indices = []
+
+        page_file = Path("preview-page.png")
+        page = ComicPage(page_file, 100, 1000)
+        position = PagePosition(0, 0, 100, 1000)
+        reader.pages = [page]
+        reader.positions = [position]
+        region_key = reader._region_key(page, position)
+        reader.canvas_pages = {page_file: (1, object(), region_key)}
+        reader._preview_pages = {page_file}
+        reader._failed_regions[region_key] = reader.MAX_RENDER_ATTEMPTS - 1
+
+        submitted = []
+        reader.async_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted.append(kwargs) or True,
+            has_pending_work=True,
+            cancel_all=lambda: None,
+        )
+
+        reader.paint()
+
+        self.assertEqual(created_images, [])
+        self.assertIn(page_file, reader._preview_pages)
+        self.assertEqual(submitted[0]["region_key"], region_key)
+
+        reader._failed_regions[region_key] = reader.MAX_RENDER_ATTEMPTS
+        submitted.clear()
+        reader.paint()
+        self.assertEqual(submitted, [])
+
+    def test_zoom_uses_blurred_preview_blurb_and_completes_on_async_result(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+        from comic_scroll_reader.imaging.async_renderer import RenderResult
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        created_images: list[tuple] = []
+        reader.canvas.create_image = lambda *args, **kwargs: created_images.append((args, kwargs)) or len(created_images)
+        reader._cancel_pending_work = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.canvas_pages = {}
+        reader.canvas_zones = {}
+        reader.page_thumbnails = {}
+        reader._preview_pages = set()
+        reader._render_generation = 1
+
+        page_file = Path("zoom_test.png")
+        reader.pages = [ComicPage(page_file, 100, 100)]
+        reader.positions = [PagePosition(0, 0, 100, 100)]
+
+        # Provide a thumbnail in cache
+        thumb = Image.new("RGB", (50, 50), (120, 130, 140))
+        reader.page_thumbnails[page_file] = thumb
+
+        # Mock async_renderer
+        submitted = []
+        results_queue = []
+        reader.async_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted.append(kwargs) or True,
+            has_pending_work=False,
+            get_results=lambda: results_queue,
+            cancel_all=lambda: None,
+        )
+
+        with patch(
+            "comic_scroll_reader.ui.reader_view.ImageTk.PhotoImage",
+            side_effect=lambda *args, **kwargs: SimpleNamespace(width=lambda: 100, height=lambda: 100),
+        ):
+            # Paint viewport -> Crisp is not in ready_photos or webp_cache, so blurred preview is used
+            reader.paint()
+
+            self.assertIn(page_file, reader._preview_pages)
+            self.assertIn(page_file, reader.canvas_pages)
+            self.assertEqual(len(submitted), 1)
+
+            # When async worker finishes crisp high-res render:
+            crisp_img = Image.new("RGB", (100, 100), (255, 0, 0))
+            res = RenderResult(
+                generation=1,
+                page_file=page_file,
+                region_key=reader._region_key(reader.pages[0], reader.positions[0]),
+                image=crisp_img,
+                webp_bytes=b"cached-webp",
+            )
+            results_queue.append(res)
+
+            preloaded = []
+            reader._schedule_neighbor_preload = lambda: preloaded.append(True)
+
+            reader._process_async_results()
+
+            # Blurred preview flag should be cleared
+            self.assertNotIn(page_file, reader._preview_pages)
+            self.assertEqual(
+                reader.drawn_webp_cache.get(res.region_key), b"cached-webp"
+            )
+            # Because all visible pages are finished, neighbor preload was triggered
+            self.assertEqual(preloaded, [True])
+
+        thumb.close()
 
 
 if __name__ == "__main__":

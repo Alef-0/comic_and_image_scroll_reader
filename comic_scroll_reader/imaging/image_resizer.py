@@ -1,55 +1,22 @@
-"""Resize decoded comic pages with OpenCV when it is available."""
+"""Resize decoded comic pages with Pillow."""
 
 from __future__ import annotations
-
-from typing import Any
 
 from PIL import Image
 
 
 class ImageResizer:
-    """Use OpenCV CPU resizing and fall back safely to Pillow."""
+    """Resize images using Pillow SIMD-accelerated filters."""
 
-    def __init__(self, cv2_module: Any | None = None) -> None:
-        self._cv2 = cv2_module
-
-        if self._cv2 is None:
-            try:
-                import cv2
-            except (ImportError, OSError):
-                return
-            self._cv2 = cv2
+    def __init__(self, default_filter: Image.Resampling = Image.Resampling.BICUBIC) -> None:
+        self.default_filter = default_filter
 
     def resize(
         self,
         image: Image.Image,
         size: tuple[int, int],
-        cpu_filter: Image.Resampling,
+        cpu_filter: Image.Resampling | None = None,
     ) -> Image.Image:
-        if self._cv2 is not None:
-            try:
-                return self._resize_opencv(image, size)
-            except Exception as error:
-                if self._is_opencv_error(error):
-                    self._cv2 = None
-                else:
-                    raise
-
-        return image.resize(size, cpu_filter)
-
-    def _resize_opencv(
-        self, image: Image.Image, size: tuple[int, int]
-    ) -> Image.Image:
-        import numpy as np
-
-        source = np.asarray(image)
-        result = self._cv2.resize(
-            source, size, interpolation=self._cv2.INTER_CUBIC
-        )
-        return Image.fromarray(result)
-
-    def _is_opencv_error(self, error: Exception) -> bool:
-        error_type = getattr(self._cv2, "error", None)
-        return isinstance(error, RuntimeError) or (
-            isinstance(error_type, type) and isinstance(error, error_type)
-        )
+        """Resize a Pillow image to the target size using the specified filter."""
+        resample = cpu_filter if cpu_filter is not None else self.default_filter
+        return image.resize(size, resample)

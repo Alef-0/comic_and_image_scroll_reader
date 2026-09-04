@@ -8,7 +8,11 @@ from pathlib import Path
 from statistics import median
 from time import perf_counter
 
-import numpy as np
+try:
+    import numpy as np
+except (ImportError, OSError):
+    np = None
+
 from PIL import Image, ImageOps
 
 try:
@@ -145,14 +149,17 @@ def main() -> int:
 
     print(f"Folder: {arguments.folder}")
     print(f"Images: {len(images)}; resize operations per run: {len(cases)}")
-    print(f"Widths: {', '.join(map(str, arguments.widths))}; repetitions: {arguments.repeat}")
-    print(f"Pillow: {Image.__version__}; NumPy: {np.__version__}")
+    numpy_version = np.__version__ if np is not None else "unavailable"
+    print(f"Pillow: {Image.__version__}; NumPy: {numpy_version}")
     if cv2 is None:
         print("OpenCV: unavailable; CUDA devices: 0")
     else:
         print(f"OpenCV: {cv2.__version__}; CUDA devices: {cuda_devices}")
 
     pipelines: list[tuple[str, Resize]] = [
+        ("Pillow nearest", pillow_resize(Image.Resampling.NEAREST)),
+        ("Pillow box", pillow_resize(Image.Resampling.BOX)),
+        ("Pillow bilinear", pillow_resize(Image.Resampling.BILINEAR)),
         ("Pillow bicubic", pillow_resize(Image.Resampling.BICUBIC)),
         ("Pillow Lanczos", pillow_resize(Image.Resampling.LANCZOS)),
     ]

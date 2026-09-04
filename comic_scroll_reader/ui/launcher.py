@@ -6,6 +6,7 @@ import tkinter as tk
 import FreeSimpleGUI as sg
 
 from ..config import CONFIG_PATH, DEFAULT_CONFIG, load_config, save_config
+from ..files.bookshelf import IMAGE_SUFFIXES, PDF_SUFFIXES, natural_file_key
 from .window import APP_ICON_PATH, ask_for_bookshelf, compact_buttons
 
 
@@ -51,10 +52,68 @@ def dropped_folder(data: object, root: object) -> Path | None:
     except (AttributeError, TypeError, ValueError):
         return None
     for entry in entries:
-        candidate = Path(entry).expanduser()
+        path_str = str(entry).strip()
+        if path_str.startswith("file://"):
+            import urllib.parse
+
+            path_str = urllib.parse.unquote(path_str[7:])
+        candidate = Path(path_str).expanduser()
         if candidate.is_dir():
             return candidate
     return None
+
+
+def dropped_images(data: object, root: object) -> list[Path]:
+    """Return dropped image files from Tk DnD event data in natural order."""
+    try:
+        entries = root.tk.splitlist(str(data))
+    except (AttributeError, TypeError, ValueError):
+        return []
+    images: list[Path] = []
+    for entry in entries:
+        path_str = str(entry).strip()
+        if path_str.startswith("file://"):
+            import urllib.parse
+
+            path_str = urllib.parse.unquote(path_str[7:])
+        candidate = Path(path_str).expanduser()
+        if candidate.is_file() and candidate.suffix.casefold() in IMAGE_SUFFIXES:
+            images.append(candidate)
+    return sorted(set(images), key=natural_file_key)
+
+
+def dropped_pdf(data: object, root: object) -> Path | None:
+    """Return the first dropped PDF file from Tk DnD event data."""
+    try:
+        entries = root.tk.splitlist(str(data))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    for entry in entries:
+        path_str = str(entry).strip()
+        if path_str.startswith("file://"):
+            import urllib.parse
+
+            path_str = urllib.parse.unquote(path_str[7:])
+        candidate = Path(path_str).expanduser()
+        if candidate.is_file() and candidate.suffix.casefold() in PDF_SUFFIXES:
+            return candidate
+    return None
+
+
+def dropped_target(data: object, root: object) -> Path | list[Path] | None:
+    """Return the dropped folder, PDF, or list of dropped images from Tk DnD event data."""
+    folder = dropped_folder(data, root)
+    if folder is not None:
+        return folder
+    pdf = dropped_pdf(data, root)
+    if pdf is not None:
+        return pdf
+    images = dropped_images(data, root)
+    if images:
+        return images
+    return None
+
+
 
 
 def _enable_folder_drop(window: sg.Window) -> bool:
@@ -105,7 +164,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
                     button_color=("#f3f7ff", "#263b69"),
                     border_width=3,
                     pad=(0, 0),
-                    tooltip="Drop a comic folder or click to choose one",
+                    tooltip="Drop a folder, PDF, or images, or click to choose one",
                 )]],
                 size=LAUNCH_BLOCK_SIZE,
                 element_justification="center",
@@ -136,7 +195,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
         ],
         [
             sg.Text(
-                "Developed by Alef-0  •  Vibecoded using GPT5.6 - Codex",
+                "Developed by Alef-0  •  Vibecoded using Codex & Antigravity",
                 expand_x=True,
                 justification="center",
             )
@@ -163,8 +222,8 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
     return window
 
 
-def run_launcher() -> Path | None:
-    """Run the launcher and return the folder chosen by the user."""
+def run_launcher() -> Path | list[Path] | None:
+    """Run the launcher and return the folder or image set chosen by the user."""
     config = load_config()
     window = build_launcher_window(config)
     drop_enabled = _enable_folder_drop(window)
@@ -184,9 +243,9 @@ def run_launcher() -> Path | None:
                     sg.popup_ok(f"Settings saved to:\n{CONFIG_PATH}")
                 continue
             if event == DROP_EVENT_KEY:
-                selected = dropped_folder(values.get(DROP_EVENT_KEY), window.TKroot)
+                selected = dropped_target(values.get(DROP_EVENT_KEY), window.TKroot)
                 if selected is None:
-                    sg.popup_error("Drop a folder containing comic pages.")
+                    sg.popup_error("Drop a folder, PDF, or images containing comic pages.")
                     continue
                 return selected
             if event == DROP_ZONE_KEY:
