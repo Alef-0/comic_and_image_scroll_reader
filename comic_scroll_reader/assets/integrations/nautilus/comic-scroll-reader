@@ -1,0 +1,3 @@
+#!/bin/sh
+# Nautilus script to open selected files/folders in Comic Scroll Reader
+exec comic-scroll-reader "$@"

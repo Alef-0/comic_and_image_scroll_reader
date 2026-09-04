@@ -1,0 +1,12 @@
+[Nemo Action]
+Name=Read In Folder
+Comment=Read the folder using creader
+Icon-Name=comic-scroll-reader
+
+Selection=none
+Extensions=any;
+
+Exec=comic-scroll-reader %P
+Quote=double
+
+

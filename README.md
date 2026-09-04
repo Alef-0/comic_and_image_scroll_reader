@@ -11,8 +11,8 @@ toolbar state.
 python3 -m pip install -r requirements.txt
 ```
 
-The reader uses OpenCV bicubic resizing on the CPU. Pillow remains a fallback
-if OpenCV cannot resize an image.
+The reader uses Pillow SIMD-accelerated resizing directly on the CPU.
+
 
 ## Run
 
@@ -72,11 +72,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip install nuitka ordered-set zstandard
 chmod +x build_binary.sh
-chmod +x build_minimal_opencv.sh
-./build_minimal_opencv.sh .venv/bin/python
-./build_binary.sh \
-  --minimal-opencv build/minimal-opencv/cv2.so \
-  .venv/bin/python
+./build_binary.sh .venv/bin/python
 ```
 
 The build can take several minutes. When it finishes, start the compiled
@@ -92,21 +88,10 @@ To open an image folder directly, pass its path after the command:
 ./comic-scroll-reader /path/to/comic
 ```
 
-The compact build compiles only OpenCV's core, image-processing, and Python
-binding modules. It excludes CUDA, codecs, video, GUI, DNN, contrib modules,
-and Intel IPP while retaining SIMD-optimized CPU resizing. Nuitka then excludes
-unused NumPy packages and compresses the application into one executable.
+The build compiles the application with Nuitka into a single compact executable
+without heavy third-party C++ dependencies like OpenCV, resulting in a lightweight
+standalone binary (~18–20 MB).
 
-`build_minimal_opencv.sh` automatically looks for the OpenCV source checkout
-associated with the selected environment's `cv2` installation. If OpenCV came
-from a normal precompiled wheel, that source is not present; download or clone
-OpenCV and pass it explicitly with `--opencv-source /path/to/opencv-source`.
-
-On the tested Linux system this reduced the distributable executable from
-about 88 MB to about 33 MB. The exact size depends on the compiler and system
-libraries. Running `build_binary.sh` without `--minimal-opencv` uses the OpenCV
-installation from the selected Python environment and may produce a much
-larger executable.
 
 ## Tests
 
@@ -157,8 +142,8 @@ shared zoom level remains in `reader_config.json`.
 
 ## Credits and license
 
-Developed by Alef-0. Vibecoded using OpenAI GPT-5.6 Codex, an agentic coding
-model. Distributed under the MIT License; see `LICENSE` for the full terms.
+Developed by Alef-0. Vibecoded using OpenAI GPT-5.6 Codex and Google Antigravity.
+Distributed under the MIT License; see `LICENSE` for the full terms.
 
 ## Build a Debian package
 
@@ -167,7 +152,7 @@ binary in an artifact folder. The folder may also contain Nuitka's
 `run_reader.onefile-build` directory; it is compiler output and is not added to
 the package.
 
-Create the version 0.1 package with:
+Create the version 0.2 package with:
 
 ```bash
 chmod +x build_deb.sh
@@ -177,7 +162,7 @@ chmod +x build_deb.sh
 The package is written to `dist/` and can be installed with:
 
 ```bash
-sudo apt install ./dist/comic-scroll-reader_0.1_amd64.deb
+sudo apt install ./dist/comic-scroll-reader_0.2_amd64.deb
 ```
 
 Set `DEB_MAINTAINER` before running the builder to replace the default local

@@ -195,7 +195,7 @@ def build_launcher_window(config: dict[str, object]) -> sg.Window:
         ],
         [
             sg.Text(
-                "Developed by Alef-0  •  Vibecoded using GPT5.6 - Codex",
+                "Developed by Alef-0  •  Vibecoded using Codex & Antigravity",
                 expand_x=True,
                 justification="center",
             )
