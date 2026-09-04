@@ -2,6 +2,7 @@
 
 from collections import deque
 from collections.abc import Callable
+import io
 from pathlib import Path
 from statistics import median
 import tkinter as tk
@@ -18,10 +19,9 @@ from ..core.layout import (
     pages_nearest_to,
     visible_page_range,
 )
-from ..core.memory import MemoryShelf
+from ..core.memory import MemoryShelf, trim_memory
 from ..core.models import ComicPage, PagePosition
-from ..files.bookshelf import PDF_SUFFIXES, open_page
-from ..imaging.image_resizer import ImageResizer
+from ..files.bookshelf import PDF_SUFFIXES, render_page_region
 from .window import (
     CANVAS_COLOR,
     PAGE_COUNTER_KEY,
@@ -30,16 +30,16 @@ from .window import (
 )
 
 
-PhotoKey = tuple[Path, int, int]
-CanvasPage = tuple[int, ImageTk.PhotoImage, tuple[int, int]]
+RegionKey = tuple[Path, int, int, int, int, int, int]
+CanvasPage = tuple[int, ImageTk.PhotoImage, RegionKey]
 
 
-def _decoded_bytes(_file: Path, image: Image.Image) -> int:
-    return image.width * image.height * len(image.getbands())
+def _photo_bytes(key: RegionKey, _photo: ImageTk.PhotoImage) -> int:
+    return key[5] * key[6] * 4
 
 
-def _photo_bytes(key: PhotoKey, _photo: ImageTk.PhotoImage) -> int:
-    return key[1] * key[2] * 4
+def _byte_length(_key: object, data: bytes) -> int:
+    return len(data)
 
 
 def _resize_filter(
@@ -57,14 +57,18 @@ class ComicStrip:
     MAX_WIDTH_RATIO = 4.0
     ZOOM_FACTOR = 1.10
     ZOOM_STEP_DELAY_MS = 1
+    ZOOM_IDLE_DELAY_MS = 400
     WHEEL_STEP = 120
-    SOURCE_CACHE_BYTES = 256 * 1024 * 1024
-    PHOTO_CACHE_BYTES = 192 * 1024 * 1024
+    DRAWN_CACHE_BYTES = 24 * 1024 * 1024
+    PHOTO_CACHE_BYTES = 32 * 1024 * 1024
     IMMEDIATE_RENDER_COUNT = 2
     RENDER_STEP_DELAY_MS = 1
     PRELOAD_DELAY_MS = 150
     PRELOAD_STEP_DELAY_MS = 10
     PRELOAD_DISTANCE = 2
+    REGION_GRANULARITY = 128
+    REGION_OVERSCAN = 128
+    MEMORY_TRIM_DELAY_MS = 250
     CONTROL_MASK = 0x0004
     PAGE_GAP_SIZE = 12
     is_folder = True
@@ -109,9 +113,8 @@ class ComicStrip:
         self.scroll_y = 0
         self.pan_x = 0
         self.positions: list[PagePosition] = []
-        self.source_images = MemoryShelf(self.SOURCE_CACHE_BYTES, _decoded_bytes)
+        self.drawn_webp_cache = MemoryShelf(self.DRAWN_CACHE_BYTES, _byte_length)
         self.ready_photos = MemoryShelf(self.PHOTO_CACHE_BYTES, _photo_bytes)
-        self.image_resizer = ImageResizer()
         self.canvas_pages: dict[Path, CanvasPage] = {}
         self.should_close = False
         self.fullscreen = False
@@ -119,8 +122,10 @@ class ComicStrip:
         self._windowed_maximized = self._is_maximized()
         self._resize_job: str | None = None
         self._zoom_job: str | None = None
+        self._zoom_cleanup_job: str | None = None
         self._render_job: str | None = None
         self._preload_job: str | None = None
+        self._memory_trim_job: str | None = None
         self._zoom_stash: deque[tuple[int, int]] = deque()
         self._pending_render_indices: list[int] = []
         self._pending_preload_indices: list[int] = []
@@ -430,36 +435,146 @@ class ComicStrip:
         maximum = -content_left
         return min(max(pan_x, minimum), maximum)
 
-    def _source_image(self, page: ComicPage) -> Image.Image | None:
-        image = self.source_images.get(page.file)
-        if image is None:
-            image = open_page(page.file)
-            if image is not None:
-                self.source_images.store(page.file, image)
-        return image
+    def _region_axis(
+        self,
+        visible_start: int,
+        visible_end: int,
+        page_size: int,
+        viewport_size: int,
+    ) -> tuple[int, int]:
+        granularity = self.REGION_GRANULARITY
+        desired_span = viewport_size + 2 * self.REGION_OVERSCAN
+        rounded_span = (
+            (desired_span + granularity - 1) // granularity
+        ) * granularity
+        span = min(page_size, rounded_span)
+        if span >= page_size:
+            return 0, page_size
+        center = (visible_start + visible_end) // 2
+        origin = ((center - span // 2) // granularity) * granularity
+        origin = min(max(origin, 0), page_size - span)
+        if origin > visible_start:
+            origin = visible_start
+        if origin + span < visible_end:
+            origin = visible_end - span
+        return origin, span
+
+    def _region_key(
+        self,
+        page: ComicPage,
+        position: PagePosition,
+        *,
+        vertical_edge: str | None = None,
+    ) -> RegionKey | None:
+        screen_x = position.x + self.pan_x
+        visible_left = max(0, -screen_x)
+        visible_right = min(position.width, self.viewport_width - screen_x)
+        if visible_right <= visible_left:
+            return None
+
+        if vertical_edge == "top":
+            visible_top = 0
+            visible_bottom = min(position.height, self.viewport_height)
+        elif vertical_edge == "bottom":
+            visible_bottom = position.height
+            visible_top = max(0, visible_bottom - self.viewport_height)
+        else:
+            screen_y = position.y - self.scroll_y
+            visible_top = max(0, -screen_y)
+            visible_bottom = min(position.height, self.viewport_height - screen_y)
+            if visible_bottom <= visible_top:
+                return None
+
+        left, region_width = self._region_axis(
+            visible_left, visible_right, position.width, self.viewport_width
+        )
+        top, region_height = self._region_axis(
+            visible_top, visible_bottom, position.height, self.viewport_height
+        )
+        return (
+            page.file,
+            position.width,
+            position.height,
+            left,
+            top,
+            region_width,
+            region_height,
+        )
+
+    @staticmethod
+    def _source_box(
+        page: ComicPage, key: RegionKey
+    ) -> tuple[float, float, float, float]:
+        _, display_width, display_height, left, top, width, height = key
+        scale_x = page.native_width / display_width
+        scale_y = page.native_height / display_height
+        return (
+            left * scale_x,
+            top * scale_y,
+            (left + width) * scale_x,
+            (top + height) * scale_y,
+        )
+
+    def _render_region(self, page: ComicPage, key: RegionKey) -> Image.Image | None:
+        return render_page_region(
+            page.file,
+            self._source_box(page, key),
+            (key[5], key[6]),
+        )
+
+    def _store_drawn_webp(self, key: RegionKey, rendered: Image.Image) -> bytes:
+        buf = io.BytesIO()
+        rendered.save(buf, format="WEBP", quality=85, method=2)
+        webp_bytes = buf.getvalue()
+        self.drawn_webp_cache.store(key, webp_bytes)
+        return webp_bytes
+
+    def _ensure_drawn_webp(self, page: ComicPage, cache_key: RegionKey) -> bytes | None:
+        cached = self.drawn_webp_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        rendered = self._render_region(page, cache_key)
+        if rendered is None:
+            return None
+        try:
+            return self._store_drawn_webp(cache_key, rendered)
+        finally:
+            rendered.close()
 
     def _canvas_photo(
-        self, page: ComicPage, width: int, height: int
+        self, page: ComicPage, cache_key: RegionKey
     ) -> ImageTk.PhotoImage | None:
-        cache_key = (page.file, width, height)
         cached = self.ready_photos.get(cache_key)
         if cached is not None:
             return cached
 
-        original = self._source_image(page)
-        if original is None:
-            return None
-        rendered = original
-        if original.size != (width, height):
-            rendered = self.image_resizer.resize(
-                original,
-                (width, height),
-                _resize_filter(original.size, (width, height)),
-            )
-
-        photo = ImageTk.PhotoImage(rendered, master=self.canvas)
+        webp_bytes = self.drawn_webp_cache.get(cache_key)
+        if webp_bytes is not None:
+            with Image.open(io.BytesIO(webp_bytes)) as rendered:
+                photo = ImageTk.PhotoImage(rendered, master=self.canvas)
+        else:
+            rendered = self._render_region(page, cache_key)
+            if rendered is None:
+                return None
+            try:
+                photo = ImageTk.PhotoImage(rendered, master=self.canvas)
+                self._store_drawn_webp(cache_key, rendered)
+            finally:
+                rendered.close()
         self.ready_photos.store(cache_key, photo)
         return photo
+
+    def _schedule_memory_trim(self) -> None:
+        if getattr(self, "_memory_trim_job", None) is not None:
+            self.canvas.after_cancel(self._memory_trim_job)
+        self._memory_trim_job = self.canvas.after(
+            self.MEMORY_TRIM_DELAY_MS, self._trim_unused_memory
+        )
+
+    def _trim_unused_memory(self) -> None:
+        self._memory_trim_job = None
+        trim_memory()
 
     def scroll(self, pixels: int) -> None:
         self.scroll_to(self.scroll_y + pixels)
@@ -544,30 +659,51 @@ class ComicStrip:
         anchor = min(max(anchor, 0), self.viewport_height)
         direction = 1 if steps > 0 else -1
 
+        if getattr(self, "_zoom_cleanup_job", None) is not None:
+            self.canvas.after_cancel(self._zoom_cleanup_job)
+            self._zoom_cleanup_job = None
+
         # A new direction supersedes queued work. Repeated commands in the same
         # direction join the stash and are applied one at a time.
-        if self._zoom_stash and self._zoom_stash[-1][0] != direction:
+        if getattr(self, "_zoom_stash", None) and self._zoom_stash[-1][0] != direction:
             self.stop_zooming()
         else:
             self._cancel_pending_work()
-        self._zoom_stash.extend((direction, anchor) for _ in range(abs(steps)))
-        if self._zoom_job is None:
+        if getattr(self, "_zoom_stash", None) is not None:
+            self._zoom_stash.extend((direction, anchor) for _ in range(abs(steps)))
+        if getattr(self, "_zoom_job", None) is None:
             self._zoom_job = self.canvas.after(
                 0, self._apply_next_zoom_step
             )
 
     def _apply_next_zoom_step(self) -> None:
         self._zoom_job = None
-        if not self._zoom_stash:
+        if not getattr(self, "_zoom_stash", None):
+            self._schedule_zoom_cleanup()
             return
         direction, anchor = self._zoom_stash.popleft()
         if not self._apply_zoom_step(direction, anchor):
             self._zoom_stash.clear()
+            self._schedule_zoom_cleanup()
             return
         if self._zoom_stash:
             self._zoom_job = self.canvas.after(
                 self.ZOOM_STEP_DELAY_MS, self._apply_next_zoom_step
             )
+        else:
+            self._schedule_zoom_cleanup()
+
+    def _schedule_zoom_cleanup(self) -> None:
+        if getattr(self, "_zoom_cleanup_job", None) is not None:
+            self.canvas.after_cancel(self._zoom_cleanup_job)
+            self._zoom_cleanup_job = None
+        self._zoom_cleanup_job = self.canvas.after(
+            self.ZOOM_IDLE_DELAY_MS, self._finish_sequential_zoom
+        )
+
+    def _finish_sequential_zoom(self) -> None:
+        self._zoom_cleanup_job = None
+        self._schedule_memory_trim()
 
     def _apply_zoom_step(self, direction: int, anchor: int) -> bool:
         maximum = self._maximum_strip_width()
@@ -742,9 +878,10 @@ class ComicStrip:
         self.strip_width = min(initial_width, self._maximum_strip_width())
         self.scroll_y = 0
         self.pan_x = 0
-        self.source_images.clear()
+        self.drawn_webp_cache.clear()
         self.ready_photos.clear()
         self._clear_canvas()
+        self._schedule_memory_trim()
         self._arrange_strip()
         self.paint()
         self.restore_zoom_level(zoom_level)
@@ -752,11 +889,16 @@ class ComicStrip:
 
     def stop_zooming(self) -> None:
         """Discard queued zoom steps and rendering left by the last step."""
-        if self._zoom_job is not None:
+        if getattr(self, "_zoom_job", None) is not None:
             self.canvas.after_cancel(self._zoom_job)
             self._zoom_job = None
-        self._zoom_stash.clear()
+        if getattr(self, "_zoom_cleanup_job", None) is not None:
+            self.canvas.after_cancel(self._zoom_cleanup_job)
+            self._zoom_cleanup_job = None
+        if getattr(self, "_zoom_stash", None) is not None:
+            self._zoom_stash.clear()
         self._cancel_pending_work()
+        self._finish_sequential_zoom()
 
     def _clear_canvas(self) -> None:
         self._cancel_pending_work()
@@ -777,29 +919,34 @@ class ComicStrip:
     def _render_page(self, index: int) -> None:
         page = self.pages[index]
         position = self.positions[index]
-        size = (position.width, position.height)
+        region_key = self._region_key(page, position)
+        if region_key is None:
+            return
         existing = self.canvas_pages.get(page.file)
-        if existing is not None and existing[2] == size:
+        if existing is not None and existing[2] == region_key:
             self.canvas.coords(
-                existing[0], position.x + self.pan_x, position.y - self.scroll_y
+                existing[0],
+                position.x + self.pan_x + region_key[3],
+                position.y - self.scroll_y + region_key[4],
             )
             return
 
         # Do the expensive resize before removing the old canvas image. During
         # rapid zooming, that old image is a better placeholder than a blank gap.
-        photo = self._canvas_photo(page, *size)
+        photo = self._canvas_photo(page, region_key)
         if photo is None:
             return
         if existing is not None:
             self.canvas.delete(existing[0])
+            self._schedule_memory_trim()
         item = self.canvas.create_image(
-            position.x + self.pan_x,
-            position.y - self.scroll_y,
+            position.x + self.pan_x + region_key[3],
+            position.y - self.scroll_y + region_key[4],
             anchor="nw",
             image=photo,
             tags=("comic-page",),
         )
-        self.canvas_pages[page.file] = (item, photo, size)
+        self.canvas_pages[page.file] = (item, photo, region_key)
 
     def paint(self, priority_y: int | None = None) -> None:
         self._cancel_pending_work()
@@ -807,41 +954,64 @@ class ComicStrip:
         first, last = visible_page_range(
             self.positions, self.scroll_y, self.viewport_height
         )
-        wanted_files = {self.pages[index].file for index in range(first, last)}
+        wanted_regions = {
+            self.pages[index].file: region
+            for index in range(first, last)
+            if (
+                region := self._region_key(self.pages[index], self.positions[index])
+            )
+            is not None
+        }
+        wanted_files = set(wanted_regions)
         for index in range(first, last):
             page = self.pages[index]
             position = self.positions[index]
-            size = (position.width, position.height)
+            region_key = wanted_regions.get(page.file)
+            if region_key is None:
+                continue
             existing = self.canvas_pages.get(page.file)
-            if existing is not None and existing[2] == size:
+            if existing is not None and existing[2] == region_key:
                 self.canvas.coords(
                     existing[0],
-                    position.x + self.pan_x,
-                    position.y - self.scroll_y,
+                    position.x + self.pan_x + region_key[3],
+                    position.y - self.scroll_y + region_key[4],
                 )
             elif existing is not None:
-                placeholder_x = (
-                    position.x
-                    + (position.width - existing[2][0]) // 2
-                    + self.pan_x
-                )
+                old_region = existing[2]
                 self.canvas.coords(
-                    existing[0], placeholder_x, position.y - self.scroll_y
+                    existing[0],
+                    position.x + self.pan_x + old_region[3],
+                    position.y - self.scroll_y + old_region[4],
                 )
 
+        evicted = False
         for file in set(self.canvas_pages) - wanted_files:
             item, _photo, _size = self.canvas_pages.pop(file)
             self.canvas.delete(item)
+            evicted = True
+
+        # Tk photos are uncompressed. Retain only the exact viewport regions.
+        active_raw_keys = set(wanted_regions.values())
+        stale_raw_keys = [
+            key for key in self.ready_photos.keys() if key not in active_raw_keys
+        ]
+        for key in stale_raw_keys:
+            self.ready_photos.pop(key)
+            evicted = True
+
+        if evicted:
+            self._schedule_memory_trim()
 
         viewport_anchor = self.viewport_height // 2 if priority_y is None else priority_y
         content_anchor = self.scroll_y + min(max(viewport_anchor, 0), self.viewport_height)
         needs_render = [
             index
             for index in range(first, last)
-            if (
+            if wanted_regions.get(self.pages[index].file) is not None
+            and (
                 self.pages[index].file not in self.canvas_pages
                 or self.canvas_pages[self.pages[index].file][2]
-                != (self.positions[index].width, self.positions[index].height)
+                != wanted_regions.get(self.pages[index].file)
             )
         ]
         prioritized = pages_nearest_to(self.positions, needs_render, content_anchor)
@@ -911,7 +1081,11 @@ class ComicStrip:
         index = self._pending_preload_indices.pop(0)
         page = self.pages[index]
         position = self.positions[index]
-        self._canvas_photo(page, position.width, position.height)
+        first, _last = self._visible_range
+        edge = "bottom" if index < first else "top"
+        region_key = self._region_key(page, position, vertical_edge=edge)
+        if region_key is not None:
+            self._ensure_drawn_webp(page, region_key)
         if self._pending_preload_indices:
             self._preload_job = self.canvas.after(
                 self.PRELOAD_STEP_DELAY_MS, self._warm_next_neighbor

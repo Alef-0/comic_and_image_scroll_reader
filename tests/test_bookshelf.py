@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from comic_scroll_reader.files.bookshelf import load_pages, natural_file_key, scan_bookshelf
+from comic_scroll_reader.files.bookshelf import (
+    load_pages,
+    natural_file_key,
+    render_page_region,
+    scan_bookshelf,
+)
 
 
 class BookshelfTests(unittest.TestCase):
@@ -73,6 +78,21 @@ class BookshelfTests(unittest.TestCase):
             [(page.native_width, page.native_height) for page in pages],
             [(10, 15), (20, 30), (100, 200)],
         )
+
+    def test_render_page_region_returns_only_requested_display_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "page.png"
+            Image.new("RGB", (2_000, 3_000), "red").save(file)
+
+            rendered = render_page_region(
+                file,
+                (500.0, 1_000.0, 1_500.0, 2_000.0),
+                (320, 240),
+            )
+
+        self.assertIsNotNone(rendered)
+        self.assertEqual(rendered.size, (320, 240))
+        rendered.close()
 
 
 if __name__ == "__main__":

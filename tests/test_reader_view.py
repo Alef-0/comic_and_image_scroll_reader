@@ -366,6 +366,8 @@ class ReaderViewTests(unittest.TestCase):
         reader = ComicStrip.__new__(ComicStrip)
         reader.canvas = FakeCanvas()
         reader._zoom_job = "zoom"
+        reader._zoom_cleanup_job = "cleanup"
+        reader._memory_trim_job = None
         reader._render_job = "render"
         reader._preload_job = "preload"
         reader._zoom_stash = deque([(1, 100), (1, 100)])
@@ -374,10 +376,84 @@ class ReaderViewTests(unittest.TestCase):
 
         reader.stop_zooming()
 
-        self.assertEqual(reader.canvas.cancelled, ["zoom", "render", "preload"])
+        self.assertEqual(reader.canvas.cancelled, ["zoom", "cleanup", "render", "preload"])
         self.assertEqual(list(reader._zoom_stash), [])
         self.assertEqual(reader._pending_render_indices, [])
         self.assertEqual(reader._pending_preload_indices, [])
+
+    def test_paint_evicts_stale_raw_photos_outside_viewport(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.IMMEDIATE_RENDER_COUNT = 2
+        reader.RENDER_STEP_DELAY_MS = 1
+        reader.PRELOAD_DISTANCE = 2
+        reader.PRELOAD_DELAY_MS = 150
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 400
+        reader.pan_x = 0
+        reader.canvas = FakeCanvas()
+        reader.canvas.coords = lambda *args: None
+        reader.canvas.delete = lambda *args: None
+        reader.canvas.tag_lower = lambda *args: None
+        reader.canvas.update_idletasks = lambda: None
+        reader.canvas_pages = {}
+        reader._cancel_pending_work = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader._render_page = lambda idx: None
+
+        # 10 pages, each 100px tall
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(10)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(10)]
+
+        # Ready photos with keys for pages 0, 2, 4, 5, 8, 9
+        reader.ready_photos = MemoryShelf[tuple[Path, int, int, int, int, int, int], object](
+            100, lambda _k, _v: 1
+        )
+        for i in [0, 2, 4, 5, 8, 9]:
+            reader.ready_photos.store(
+                (reader.pages[i].file, 100, 100, 0, 0, 100, 100), f"photo_{i}"
+            )
+
+        # scroll_y=400 and height=200 covers pages 4 and 5.
+        # Raw expansion is strictly viewport-only
+        reader.paint()
+
+        # Pages 0, 2, 8, 9 are outside viewport [4, 6) and must be evicted
+        for index in (0, 2, 8, 9):
+            key = (reader.pages[index].file, 100, 100, 0, 0, 100, 100)
+            self.assertIsNone(reader.ready_photos.get(key))
+
+        # Pages 4 and 5 are within viewport [4, 6) and must be retained
+        self.assertEqual(
+            reader.ready_photos.get((reader.pages[4].file, 100, 100, 0, 0, 100, 100)), "photo_4"
+        )
+        self.assertEqual(
+            reader.ready_photos.get((reader.pages[5].file, 100, 100, 0, 0, 100, 100)), "photo_5"
+        )
+
+    def test_zoomed_region_is_bounded_to_viewport_plus_overscan(self) -> None:
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.viewport_width = 960
+        reader.viewport_height = 1_006
+        reader.pan_x = 0
+        reader.scroll_y = 5_000
+        reader.REGION_GRANULARITY = ComicStrip.REGION_GRANULARITY
+        reader.REGION_OVERSCAN = ComicStrip.REGION_OVERSCAN
+        page = ComicPage(Path("page.webp"), 4_970, 6_992)
+        position = PagePosition(-1_440, 0, 3_840, 5_402)
+
+        key = reader._region_key(page, position)
+
+        self.assertIsNotNone(key)
+        maximum_extra = 2 * reader.REGION_OVERSCAN + reader.REGION_GRANULARITY - 1
+        self.assertLessEqual(key[5], 960 + maximum_extra)
+        self.assertLessEqual(key[6], 1_006 + maximum_extra)
+        self.assertLess(key[5] * key[6] * 4, 7 * 1024 * 1024)
 
 
 if __name__ == "__main__":

@@ -44,7 +44,55 @@ def open_page(file: Path) -> Image.Image | None:
         ensure_page_available(file)
     try:
         with Image.open(file) as source:
-            return ImageOps.exif_transpose(source).convert("RGB").copy()
+            oriented = ImageOps.exif_transpose(source)
+            try:
+                image = oriented.convert("RGB")
+                image.load()
+                return image
+            finally:
+                if oriented is not source:
+                    oriented.close()
+    except (OSError, ValueError, UnidentifiedImageError):
+        return None
+
+
+def render_page_region(
+    file: Path,
+    source_box: tuple[float, float, float, float],
+    target_size: tuple[int, int],
+) -> Image.Image | None:
+    """Render one source region at display size without retaining the decoded page."""
+    from .pdf_reader import ensure_page_available, render_registered_page_region
+
+    rendered = render_registered_page_region(file, source_box, target_size)
+    if rendered is not None:
+        return rendered
+    if not file.is_file():
+        ensure_page_available(file)
+
+    width, height = target_size
+    if width < 1 or height < 1:
+        return None
+    try:
+        with Image.open(file) as source:
+            oriented = ImageOps.exif_transpose(source)
+            converted = oriented
+            try:
+                if oriented.mode != "RGB":
+                    converted = oriented.convert("RGB")
+                rendered = converted.transform(
+                    (width, height),
+                    Image.Transform.EXTENT,
+                    source_box,
+                    resample=Image.Resampling.BICUBIC,
+                )
+                rendered.load()
+                return rendered
+            finally:
+                if converted is not oriented:
+                    converted.close()
+                if oriented is not source:
+                    oriented.close()
     except (OSError, ValueError, UnidentifiedImageError):
         return None
 
@@ -78,4 +126,3 @@ def load_pages(files: Iterable[Path]) -> list[ComicPage]:
 def scan_bookshelf(folder: Path) -> list[ComicPage]:
     """Return image pages with readable metadata in natural filename order."""
     return load_pages(folder.iterdir())
-
