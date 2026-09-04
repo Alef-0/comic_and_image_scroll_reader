@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import heapq
+import io
 import os
 from pathlib import Path
 import queue
@@ -39,6 +40,7 @@ class RenderResult:
     page_file: Path
     region_key: tuple[Any, ...]
     image: Image.Image | None
+    webp_bytes: bytes | None = None
 
 
 class BoundedRequestQueue:
@@ -49,7 +51,7 @@ class BoundedRequestQueue:
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._heap: list[RenderRequest] = []
-        self._active_keys: set[tuple[Any, ...]] = set()
+        self._active_keys: set[tuple[int, tuple[Any, ...]]] = set()
         self._closed = False
         self._counter = 0
 
@@ -68,7 +70,8 @@ class BoundedRequestQueue:
         with self._cv:
             if self._closed:
                 return False
-            if region_key in self._active_keys:
+            request_id = (generation, region_key)
+            if request_id in self._active_keys:
                 return False
 
             self._counter += 1
@@ -91,12 +94,14 @@ class BoundedRequestQueue:
                 if evicted.priority > priority:
                     self._heap.pop(max_idx)
                     heapq.heapify(self._heap)
-                    self._active_keys.discard(evicted.region_key)
+                    self._active_keys.discard(
+                        (evicted.generation, evicted.region_key)
+                    )
                 else:
                     return False
 
             heapq.heappush(self._heap, request)
-            self._active_keys.add(region_key)
+            self._active_keys.add(request_id)
             self._cv.notify()
             return True
 
@@ -107,21 +112,25 @@ class BoundedRequestQueue:
                 self._cv.wait()
             if self._closed or not self._heap:
                 return None
-            request = heapq.heappop(self._heap)
-            self._active_keys.discard(request.region_key)
-            return request
+            return heapq.heappop(self._heap)
+
+    def task_done(self, request: RenderRequest) -> None:
+        """Release a request identity after its worker fully publishes a result."""
+        with self._cv:
+            self._active_keys.discard((request.generation, request.region_key))
 
     def cancel_stale_generations(self, current_generation: int) -> None:
         """Drop unstarted requests whose generation is older than current_generation."""
         with self._cv:
             new_heap: list[RenderRequest] = []
-            new_keys: set[tuple[Any, ...]] = set()
-            for req in self._heap:
-                if req.generation >= current_generation:
-                    new_heap.append(req)
-                    new_keys.add(req.region_key)
+            for request in self._heap:
+                if request.generation >= current_generation:
+                    new_heap.append(request)
+                else:
+                    self._active_keys.discard(
+                        (request.generation, request.region_key)
+                    )
             self._heap = new_heap
-            self._active_keys = new_keys
             heapq.heapify(self._heap)
 
     def is_empty(self) -> bool:
@@ -129,18 +138,29 @@ class BoundedRequestQueue:
         with self._cv:
             return len(self._heap) == 0
 
+    def has_work(self) -> bool:
+        """Return whether a request is queued or owned by a worker."""
+        with self._cv:
+            return bool(self._active_keys)
+
     def cancel_all(self) -> None:
         """Discard all queued, unstarted render jobs."""
         with self._cv:
+            for request in self._heap:
+                self._active_keys.discard(
+                    (request.generation, request.region_key)
+                )
             self._heap.clear()
-            self._active_keys.clear()
 
     def close(self) -> None:
         """Wake up all waiting threads and disallow new requests."""
         with self._cv:
             self._closed = True
+            for request in self._heap:
+                self._active_keys.discard(
+                    (request.generation, request.region_key)
+                )
             self._heap.clear()
-            self._active_keys.clear()
             self._cv.notify_all()
 
 
@@ -163,8 +183,6 @@ class AsyncRenderer:
         self.result_queue: queue.Queue[RenderResult] = queue.Queue()
         self._current_generation = 0
         self._threads: list[threading.Thread] = []
-        self._busy_count = 0
-        self._busy_lock = threading.Lock()
         self._closed = False
         self._start_workers()
 
@@ -184,39 +202,50 @@ class AsyncRenderer:
             if request is None:
                 break
             if request.generation < self._current_generation:
+                self.request_queue.task_done(request)
                 continue
 
-            with self._busy_lock:
-                self._busy_count += 1
+            rendered: Image.Image | None = None
+            webp_bytes: bytes | None = None
             try:
-                rendered = render_page_region(
-                    request.page_file,
-                    request.source_box,
-                    request.target_size,
-                    resample=request.resample,
-                )
-            except Exception:
-                rendered = None
-            finally:
-                with self._busy_lock:
-                    self._busy_count -= 1
+                try:
+                    rendered = render_page_region(
+                        request.page_file,
+                        request.source_box,
+                        request.target_size,
+                        resample=request.resample,
+                    )
+                except Exception:
+                    rendered = None
 
-            if self._closed or request.generation < self._current_generation:
                 if rendered is not None:
                     try:
-                        rendered.close()
+                        buffer = io.BytesIO()
+                        rendered.save(buffer, format="WEBP", quality=85, method=0)
+                        webp_bytes = buffer.getvalue()
                     except Exception:
-                        pass
-                continue
+                        # The decoded image is still useful for the current
+                        # viewport even when optional cache compression fails.
+                        webp_bytes = None
 
-            self.result_queue.put(
-                RenderResult(
-                    generation=request.generation,
-                    page_file=request.page_file,
-                    region_key=request.region_key,
-                    image=rendered,
+                if self._closed or request.generation < self._current_generation:
+                    if rendered is not None:
+                        rendered.close()
+                    continue
+
+                self.result_queue.put(
+                    RenderResult(
+                        generation=request.generation,
+                        page_file=request.page_file,
+                        region_key=request.region_key,
+                        image=rendered,
+                        webp_bytes=webp_bytes,
+                    )
                 )
-            )
+            finally:
+                # Publish before releasing the identity so polling never sees a
+                # false "all work drained" state between rendering and enqueue.
+                self.request_queue.task_done(request)
 
     def submit(
         self,
@@ -254,9 +283,7 @@ class AsyncRenderer:
     @property
     def has_pending_work(self) -> bool:
         """Return True if any requests are queued, actively rendering, or uncollected."""
-        with self._busy_lock:
-            busy = self._busy_count > 0
-        return busy or not self.request_queue.is_empty() or not self.result_queue.empty()
+        return self.request_queue.has_work() or not self.result_queue.empty()
 
     def get_results(self) -> list[RenderResult]:
         """Fetch all available completed render results without blocking."""

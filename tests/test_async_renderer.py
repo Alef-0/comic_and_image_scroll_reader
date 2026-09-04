@@ -56,12 +56,42 @@ class AsyncRendererTests(unittest.TestCase):
         req1 = queue.get()
         self.assertIsNotNone(req1)
         self.assertEqual(req1.region_key, ("B",))
+        queue.task_done(req1)
 
         # Second popped must be A (priority 5)
         req2 = queue.get()
         self.assertIsNotNone(req2)
         self.assertEqual(req2.region_key, ("A",))
+        queue.task_done(req2)
 
+        queue.close()
+
+    def test_queue_deduplicates_in_flight_requests_by_generation(self) -> None:
+        queue = BoundedRequestQueue(max_pending=4)
+        file = Path("/tmp/test.png")
+        request_args = dict(
+            priority=0,
+            page_file=file,
+            region_key=("same-region",),
+            source_box=(0, 0, 10, 10),
+            target_size=(10, 10),
+        )
+
+        self.assertTrue(queue.submit(generation=1, **request_args))
+        active = queue.get()
+        self.assertIsNotNone(active)
+        self.assertTrue(queue.is_empty())
+        self.assertTrue(queue.has_work())
+        self.assertFalse(queue.submit(generation=1, **request_args))
+
+        # A newer zoom generation may request the same coordinates while the
+        # stale generation finishes in the background.
+        self.assertTrue(queue.submit(generation=2, **request_args))
+        queue.task_done(active)
+        queued = queue.get()
+        self.assertEqual(queued.generation, 2)
+        queue.task_done(queued)
+        self.assertFalse(queue.has_work())
         queue.close()
 
     def test_queue_eviction_when_full(self) -> None:
@@ -166,6 +196,8 @@ class AsyncRendererTests(unittest.TestCase):
             self.assertEqual(result.page_file, img_path)
             self.assertIsNotNone(result.image)
             self.assertEqual(result.image.size, (50, 50))
+            self.assertIsNotNone(result.webp_bytes)
+            self.assertTrue(result.webp_bytes.startswith(b"RIFF"))
             result.image.close()
 
         renderer.shutdown()

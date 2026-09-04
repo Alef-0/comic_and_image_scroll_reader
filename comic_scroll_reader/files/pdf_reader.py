@@ -25,6 +25,9 @@ _THUMBNAIL_PROVIDERS: dict[
     Callable[[tuple[int, int]], Image.Image | None],
 ] = {}
 _REGISTRY_LOCK = threading.Lock()
+# PDFium owns process-wide mutable state and cannot be entered concurrently,
+# even when each caller opens a separate document.
+_PDFIUM_LOCK = threading.Lock()
 
 
 def register_page_provider(
@@ -105,12 +108,13 @@ class PdfBookshelf:
 
         self.pages: list[ComicPage] = []
         self._page_files: list[Path] = []
-        inspection_document = pdfium.PdfDocument(self.pdf_path)
-        try:
-            self.page_count = len(inspection_document)
-            self._init_pages(inspection_document)
-        finally:
-            inspection_document.close()
+        with _PDFIUM_LOCK:
+            inspection_document = pdfium.PdfDocument(self.pdf_path)
+            try:
+                self.page_count = len(inspection_document)
+                self._init_pages(inspection_document)
+            finally:
+                inspection_document.close()
 
         atexit.register(self.close)
 
@@ -141,26 +145,29 @@ class PdfBookshelf:
             if self._closed or target_path.is_file():
                 return
             temp_path = self.cache_dir / f".tmp_page_{index + 1:04d}.jpg"
-            document = pdfium.PdfDocument(self.pdf_path)
-            page = document[index]
             try:
-                bitmap = page.render(scale=self.scale, limit_image_cache=True)
-                try:
-                    image = bitmap.to_pil()
+                with _PDFIUM_LOCK:
+                    document = pdfium.PdfDocument(self.pdf_path)
+                    page = document[index]
                     try:
-                        image.save(temp_path, "JPEG", quality=self.JPEG_QUALITY)
-                        os.replace(temp_path, target_path)
+                        bitmap = page.render(scale=self.scale, limit_image_cache=True)
+                        try:
+                            image = bitmap.to_pil()
+                            try:
+                                image.save(
+                                    temp_path, "JPEG", quality=self.JPEG_QUALITY
+                                )
+                                os.replace(temp_path, target_path)
+                            finally:
+                                image.close()
+                        finally:
+                            bitmap.close()
                     finally:
-                        image.close()
-                finally:
-                    bitmap.close()
+                        page.close()
+                        document.close()
             except Exception:
-                if temp_path.is_file():
-                    temp_path.unlink(missing_ok=True)
+                temp_path.unlink(missing_ok=True)
                 raise
-            finally:
-                page.close()
-                document.close()
         trim_memory()
 
     def _render_page_thumbnail(
@@ -176,27 +183,40 @@ class PdfBookshelf:
             return None
         s = min(max_size[0] / native_w, max_size[1] / native_h)
         render_scale = max(0.01, s * self.scale)
-        document = pdfium.PdfDocument(self.pdf_path)
-        page = document[index]
+        # Thumbnail lookup runs on Tk's thread. Never make the UI wait behind a
+        # large region render; the page zone remains until a later crisp result.
+        if not _PDFIUM_LOCK.acquire(blocking=False):
+            return None
         try:
-            bitmap = page.render(
-                scale=render_scale,
-                limit_image_cache=True,
-                rev_byteorder=True,
-            )
+            if self._closed:
+                return None
+            document = pdfium.PdfDocument(self.pdf_path)
+            page = document[index]
             try:
-                shared = bitmap.to_pil()
+                bitmap = page.render(
+                    scale=render_scale,
+                    limit_image_cache=True,
+                    rev_byteorder=True,
+                )
                 try:
-                    thumb = shared.convert("RGB")
-                    thumb.load()
-                    return thumb
+                    shared = bitmap.to_pil()
+                    try:
+                        thumb = shared.convert("RGB")
+                        thumb.load()
+                        return thumb
+                    finally:
+                        shared.close()
                 finally:
-                    shared.close()
+                    bitmap.close()
             finally:
-                bitmap.close()
+                page.close()
+                document.close()
+        except pdfium.PdfiumError:
+            # A preview is optional; a malformed page must not escape through a
+            # Tk callback and start an exception loop while scrolling.
+            return None
         finally:
-            page.close()
-            document.close()
+            _PDFIUM_LOCK.release()
 
     def _render_page_region(
         self,
@@ -225,28 +245,29 @@ class PdfBookshelf:
             (native_width - right) / self.scale,
             top / self.scale,
         )
-        if self._closed:
-            return None
-        document = pdfium.PdfDocument(self.pdf_path)
-        page = document[index]
-        try:
-            bitmap = page.render(
-                scale=render_scale,
-                crop=crop,
-                limit_image_cache=True,
-                rev_byteorder=True,
-            )
+        with _PDFIUM_LOCK:
+            if self._closed:
+                return None
+            document = pdfium.PdfDocument(self.pdf_path)
+            page = document[index]
             try:
-                shared = bitmap.to_pil()
+                bitmap = page.render(
+                    scale=render_scale,
+                    crop=crop,
+                    limit_image_cache=True,
+                    rev_byteorder=True,
+                )
                 try:
-                    rendered = shared.convert("RGB")
+                    shared = bitmap.to_pil()
+                    try:
+                        rendered = shared.convert("RGB")
+                    finally:
+                        shared.close()
                 finally:
-                    shared.close()
+                    bitmap.close()
             finally:
-                bitmap.close()
-        finally:
-            page.close()
-            document.close()
+                page.close()
+                document.close()
 
         if rendered.size != target_size:
             corrected = rendered.resize(target_size, Image.Resampling.BICUBIC)

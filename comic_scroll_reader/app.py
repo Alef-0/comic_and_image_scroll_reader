@@ -451,12 +451,13 @@ def run_reader(
             if action is not None:
                 action()
     finally:
-        if active_pdf is not None:
-            active_pdf.close()
-            active_pdf = None
         if reader is not None:
             _save_global_zoom(reader)
             _save_current_progress(reader)
+            reader.request_close()
+        if active_pdf is not None:
+            active_pdf.close()
+            active_pdf = None
         _save_window_state(normal_geometry, maximized_on_close)
         window.close()
     return 0
@@ -497,5 +498,4 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         target = run_launcher()
     return 0
-
 

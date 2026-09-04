@@ -1,13 +1,14 @@
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
 import pypdfium2 as pdfium
 
-from comic_scroll_reader.files.bookshelf import open_page
+from comic_scroll_reader.files.bookshelf import get_page_thumbnail, open_page
 from comic_scroll_reader.files.pdf_reader import PdfBookshelf
 
 
@@ -176,6 +177,25 @@ class PdfReaderTests(unittest.TestCase):
             self._create_sample_pdf(pdf_file, [(200, 300), (200, 300), (200, 300), (200, 300)])
             bookshelf = PdfBookshelf(pdf_file, scale=1.0)
             try:
+                real_document = pdfium.PdfDocument
+                state_lock = threading.Lock()
+                active_opens = 0
+                maximum_active_opens = 0
+
+                def tracked_document(*args, **kwargs):
+                    nonlocal active_opens, maximum_active_opens
+                    with state_lock:
+                        active_opens += 1
+                        maximum_active_opens = max(
+                            maximum_active_opens, active_opens
+                        )
+                    try:
+                        time.sleep(0.02)
+                        return real_document(*args, **kwargs)
+                    finally:
+                        with state_lock:
+                            active_opens -= 1
+
                 def render_task(i: int):
                     img = render_page_region(
                         bookshelf.pages[i].file,
@@ -187,11 +207,42 @@ class PdfReaderTests(unittest.TestCase):
                         img.close()
                     return size
 
-                with ThreadPoolExecutor(max_workers=4) as ex:
-                    results = list(ex.map(render_task, range(4)))
+                with patch(
+                    "comic_scroll_reader.files.pdf_reader.pdfium.PdfDocument",
+                    side_effect=tracked_document,
+                ):
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        results = list(ex.map(render_task, range(4)))
 
                 self.assertEqual(results, [(50, 50), (50, 50), (50, 50), (50, 50)])
+                self.assertEqual(maximum_active_opens, 1)
             finally:
+                bookshelf.close()
+
+    def test_pdf_thumbnail_does_not_wait_for_active_pdfium_work(self) -> None:
+        from comic_scroll_reader.files.pdf_reader import _PDFIUM_LOCK
+
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_file = Path(temporary) / "nonblocking-thumb.pdf"
+            self._create_sample_pdf(pdf_file, [(300, 400)])
+            bookshelf = PdfBookshelf(pdf_file, scale=1.0)
+            lock_acquired = threading.Event()
+            release_lock = threading.Event()
+
+            def hold_pdfium_lock() -> None:
+                with _PDFIUM_LOCK:
+                    lock_acquired.set()
+                    release_lock.wait(timeout=2.0)
+
+            holder = threading.Thread(target=hold_pdfium_lock)
+            holder.start()
+            try:
+                self.assertTrue(lock_acquired.wait(timeout=2.0))
+                thumbnail = get_page_thumbnail(bookshelf.pages[0].file)
+                self.assertIsNone(thumbnail)
+            finally:
+                release_lock.set()
+                holder.join(timeout=2.0)
                 bookshelf.close()
 
 
