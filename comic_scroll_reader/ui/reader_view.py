@@ -524,7 +524,7 @@ class ComicStrip:
 
     def _store_drawn_webp(self, key: RegionKey, rendered: Image.Image) -> bytes:
         buf = io.BytesIO()
-        rendered.save(buf, format="WEBP", quality=85, method=2)
+        rendered.save(buf, format="WEBP", quality=85, method=0)
         webp_bytes = buf.getvalue()
         self.drawn_webp_cache.store(key, webp_bytes)
         return webp_bytes

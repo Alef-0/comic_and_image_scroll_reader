@@ -94,6 +94,59 @@ class BookshelfTests(unittest.TestCase):
         self.assertEqual(rendered.size, (320, 240))
         rendered.close()
 
+    def test_render_page_region_with_fractional_boxes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "pattern.png"
+            # Create a 100x100 image with green on top-half and blue on bottom-half
+            img = Image.new("RGB", (100, 100), (0, 255, 0))
+            for y in range(50, 100):
+                for x in range(100):
+                    img.putpixel((x, y), (0, 0, 255))
+            img.save(file)
+
+            # Crop entirely within the blue bottom half using fractional coordinates
+            rendered = render_page_region(
+                file,
+                (10.25, 60.5, 80.75, 90.25),
+                (50, 50),
+            )
+
+        self.assertIsNotNone(rendered)
+        self.assertEqual(rendered.size, (50, 50))
+        # Center pixel must be pure blue (0, 0, 255)
+        self.assertEqual(rendered.getpixel((25, 25)), (0, 0, 255))
+        rendered.close()
+
+    def test_render_page_region_clamps_out_of_bounds_box(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "bounded.png"
+            Image.new("RGB", (100, 100), (128, 64, 32)).save(file)
+
+            # Box extends past image edges
+            rendered = render_page_region(
+                file,
+                (-10.5, -5.0, 115.0, 105.5),
+                (40, 40),
+            )
+
+        self.assertIsNotNone(rendered)
+        self.assertEqual(rendered.size, (40, 40))
+        self.assertEqual(rendered.getpixel((20, 20)), (128, 64, 32))
+        rendered.close()
+
+    def test_render_page_region_rejects_inverted_or_empty_box(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "page.png"
+            Image.new("RGB", (100, 100), "white").save(file)
+
+            # Inverted box
+            self.assertIsNone(render_page_region(file, (80.0, 80.0, 20.0, 20.0), (50, 50)))
+            # Zero-width box
+            self.assertIsNone(render_page_region(file, (20.0, 20.0, 20.0, 50.0), (50, 50)))
+            # Zero target dimension
+            self.assertIsNone(render_page_region(file, (0.0, 0.0, 50.0, 50.0), (0, 50)))
+
 
 if __name__ == "__main__":
     unittest.main()
+

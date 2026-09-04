@@ -60,6 +60,7 @@ def render_page_region(
     file: Path,
     source_box: tuple[float, float, float, float],
     target_size: tuple[int, int],
+    resample: Image.Resampling = Image.Resampling.BICUBIC,
 ) -> Image.Image | None:
     """Render one source region at display size without retaining the decoded page."""
     from .pdf_reader import ensure_page_available, render_registered_page_region
@@ -80,11 +81,17 @@ def render_page_region(
             try:
                 if oriented.mode != "RGB":
                     converted = oriented.convert("RGB")
-                rendered = converted.transform(
+                img_w, img_h = float(converted.width), float(converted.height)
+                x0 = max(0.0, min(img_w, float(source_box[0])))
+                y0 = max(0.0, min(img_h, float(source_box[1])))
+                x1 = max(x0, min(img_w, float(source_box[2])))
+                y1 = max(y0, min(img_h, float(source_box[3])))
+                if x1 <= x0 or y1 <= y0:
+                    return None
+                rendered = converted.resize(
                     (width, height),
-                    Image.Transform.EXTENT,
-                    source_box,
-                    resample=Image.Resampling.BICUBIC,
+                    resample=resample,
+                    box=(x0, y0, x1, y1),
                 )
                 rendered.load()
                 return rendered
