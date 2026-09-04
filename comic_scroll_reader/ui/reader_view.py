@@ -22,6 +22,7 @@ from ..core.layout import (
 from ..core.memory import MemoryShelf, trim_memory
 from ..core.models import ComicPage, PagePosition
 from ..files.bookshelf import PDF_SUFFIXES, render_page_region
+from ..imaging.async_renderer import AsyncRenderer
 from .window import (
     CANVAS_COLOR,
     PAGE_COUNTER_KEY,
@@ -126,6 +127,9 @@ class ComicStrip:
         self._render_job: str | None = None
         self._preload_job: str | None = None
         self._memory_trim_job: str | None = None
+        self._async_poll_job: str | None = None
+        self._render_generation = 0
+        self.async_renderer = AsyncRenderer()
         self._zoom_stash: deque[tuple[int, int]] = deque()
         self._pending_render_indices: list[int] = []
         self._pending_preload_indices: list[int] = []
@@ -260,6 +264,8 @@ class ComicStrip:
 
     def request_close(self) -> None:
         self.stop_zooming()
+        if getattr(self, "async_renderer", None) is not None:
+            self.async_renderer.shutdown()
         self.should_close = True
 
     def _is_maximized(self) -> bool:
@@ -907,14 +913,21 @@ class ComicStrip:
         self.canvas_pages.clear()
 
     def _cancel_pending_work(self) -> None:
-        if self._render_job is not None:
+        if getattr(self, "_async_poll_job", None) is not None:
+            self.canvas.after_cancel(self._async_poll_job)
+            self._async_poll_job = None
+        if getattr(self, "async_renderer", None) is not None:
+            self.async_renderer.cancel_all()
+        if getattr(self, "_render_job", None) is not None:
             self.canvas.after_cancel(self._render_job)
             self._render_job = None
-        if self._preload_job is not None:
+        if getattr(self, "_preload_job", None) is not None:
             self.canvas.after_cancel(self._preload_job)
             self._preload_job = None
-        self._pending_render_indices.clear()
-        self._pending_preload_indices.clear()
+        if hasattr(self, "_pending_render_indices"):
+            self._pending_render_indices.clear()
+        if hasattr(self, "_pending_preload_indices"):
+            self._pending_preload_indices.clear()
 
     def _render_page(self, index: int) -> None:
         page = self.pages[index]
@@ -1015,42 +1028,108 @@ class ComicStrip:
             )
         ]
         prioritized = pages_nearest_to(self.positions, needs_render, content_anchor)
-        for index in prioritized[: self.IMMEDIATE_RENDER_COUNT]:
-            self._render_page(index)
+        async_renderer = getattr(self, "async_renderer", None)
+        cold_indices: list[int] = []
+        for index in prioritized:
+            page = self.pages[index]
+            key = wanted_regions[page.file]
+            if (
+                self.ready_photos.get(key) is not None
+                or self.drawn_webp_cache.get(key) is not None
+                or async_renderer is None
+            ):
+                self._render_page(index)
+            else:
+                cold_indices.append(index)
+
+        if async_renderer is not None and cold_indices:
+            generation = getattr(self, "_render_generation", 0)
+            for rank, index in enumerate(cold_indices):
+                page = self.pages[index]
+                key = wanted_regions[page.file]
+                async_renderer.submit(
+                    priority=rank,
+                    generation=generation,
+                    page_file=page.file,
+                    region_key=key,
+                    source_box=self._source_box(page, key),
+                    target_size=(key[5], key[6]),
+                )
+            self._schedule_async_poll()
 
         self.canvas.tag_lower("comic-page")
         self._visible_range = (first, last)
-        self._pending_render_indices = prioritized[self.IMMEDIATE_RENDER_COUNT :]
-        if self._pending_render_indices:
-            self._render_job = self.canvas.after(
-                self.RENDER_STEP_DELAY_MS, self._render_next_page
-            )
-        else:
-            self._schedule_neighbor_preload()
+        if hasattr(self, "_pending_render_indices"):
+            self._pending_render_indices.clear()
+        self._schedule_neighbor_preload()
         self._sync_scrollbar()
         self._show_page_counter()
         # Tk likes to batch wheel-driven paints. Flushing idle work makes the
         # reader feel immediate without forcing a full event-loop update.
         self.canvas.update_idletasks()
 
-    def _render_next_page(self) -> None:
-        self._render_job = None
-        if not self._pending_render_indices:
-            self._schedule_neighbor_preload()
+    def _schedule_async_poll(self) -> None:
+        if getattr(self, "_async_poll_job", None) is None:
+            self._async_poll_job = self.canvas.after(10, self._process_async_results)
+
+    def _process_async_results(self) -> None:
+        self._async_poll_job = None
+        async_renderer = getattr(self, "async_renderer", None)
+        if async_renderer is None:
             return
 
-        index = self._pending_render_indices.pop(0)
-        first, last = self._visible_range
-        if first <= index < last:
-            self._render_page(index)
+        results = async_renderer.get_results()
+        first, last = getattr(self, "_visible_range", (0, 0))
+        visible_files = {
+            self.pages[i].file: (self.pages[i], self.positions[i])
+            for i in range(first, last)
+            if i < len(self.pages) and i < len(self.positions)
+        }
+
+        any_canvas_updated = False
+        current_generation = getattr(self, "_render_generation", 0)
+        for res in results:
+            if res.generation != current_generation:
+                if res.image is not None:
+                    try:
+                        res.image.close()
+                    except Exception:
+                        pass
+                continue
+
+            if res.image is None:
+                continue
+
+            try:
+                self._store_drawn_webp(res.region_key, res.image)
+
+                if res.page_file in visible_files:
+                    page, position = visible_files[res.page_file]
+                    current_key = self._region_key(page, position)
+                    if current_key == res.region_key:
+                        photo = ImageTk.PhotoImage(res.image, master=self.canvas)
+                        self.ready_photos.store(res.region_key, photo)
+                        existing = self.canvas_pages.get(res.page_file)
+                        if existing is not None:
+                            self.canvas.delete(existing[0])
+                        item = self.canvas.create_image(
+                            position.x + self.pan_x + res.region_key[3],
+                            position.y - self.scroll_y + res.region_key[4],
+                            anchor="nw",
+                            image=photo,
+                            tags=("comic-page",),
+                        )
+                        self.canvas_pages[res.page_file] = (item, photo, res.region_key)
+                        any_canvas_updated = True
+            finally:
+                res.image.close()
+
+        if any_canvas_updated:
+            self.canvas.tag_lower("comic-page")
             self.canvas.update_idletasks()
 
-        if self._pending_render_indices:
-            self._render_job = self.canvas.after(
-                self.RENDER_STEP_DELAY_MS, self._render_next_page
-            )
-        else:
-            self._schedule_neighbor_preload()
+        if async_renderer.has_pending_work:
+            self._schedule_async_poll()
 
     def _sync_scrollbar(self) -> None:
         if self.content_height <= self.viewport_height:
@@ -1069,6 +1148,30 @@ class ComicStrip:
             first, last, len(self.pages), self.PRELOAD_DISTANCE
         )
         self._pending_preload_indices = nearby
+        async_renderer = getattr(self, "async_renderer", None)
+        if async_renderer is not None and nearby:
+            generation = getattr(self, "_render_generation", 0)
+            for rank, index in enumerate(nearby):
+                page = self.pages[index]
+                position = self.positions[index]
+                edge = "bottom" if index < first else "top"
+                region_key = self._region_key(page, position, vertical_edge=edge)
+                if (
+                    region_key is not None
+                    and self.drawn_webp_cache.get(region_key) is None
+                    and self.ready_photos.get(region_key) is None
+                ):
+                    async_renderer.submit(
+                        priority=10 + rank,
+                        generation=generation,
+                        page_file=page.file,
+                        region_key=region_key,
+                        source_box=self._source_box(page, region_key),
+                        target_size=(region_key[5], region_key[6]),
+                    )
+            self._schedule_async_poll()
+            return
+
         if nearby:
             self._preload_job = self.canvas.after(
                 self.PRELOAD_DELAY_MS, self._warm_next_neighbor

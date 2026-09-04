@@ -455,6 +455,59 @@ class ReaderViewTests(unittest.TestCase):
         self.assertLessEqual(key[6], 1_006 + maximum_extra)
         self.assertLess(key[5] * key[6] * 4, 7 * 1024 * 1024)
 
+    def test_paint_dispatches_cold_pages_to_async_renderer(self) -> None:
+        from comic_scroll_reader.core.memory import MemoryShelf
+        from comic_scroll_reader.imaging.async_renderer import RenderResult
+
+        reader = ComicStrip.__new__(ComicStrip)
+        reader.canvas = FakeCanvas()
+        reader.canvas.coords = lambda *args: None
+        reader.canvas.delete = lambda *args: None
+        reader.canvas.tag_lower = lambda *args: None
+        reader.canvas.update_idletasks = lambda: None
+        reader._sync_scrollbar = lambda: None
+        reader._show_page_counter = lambda: None
+        reader.canvas_pages = {}
+        reader.viewport_height = 200
+        reader.viewport_width = 100
+        reader.scroll_y = 0
+        reader.pan_x = 0
+        reader.REGION_GRANULARITY = 128
+        reader.REGION_OVERSCAN = 128
+        reader.PRELOAD_DISTANCE = 1
+        reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
+        reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
+        reader.pages = [ComicPage(Path(f"p{i}.png"), 100, 100) for i in range(4)]
+        reader.positions = [PagePosition(0, i * 100, 100, 100) for i in range(4)]
+        reader._render_generation = 1
+        reader._async_poll_job = None
+
+        submitted_jobs: list[dict] = []
+        mock_renderer = SimpleNamespace(
+            submit=lambda **kwargs: submitted_jobs.append(kwargs) or True,
+            has_pending_work=True,
+            get_results=lambda: [],
+            cancel_all=lambda: None,
+        )
+        reader.async_renderer = mock_renderer
+
+        # paint covers pages 0 and 1
+        reader.paint()
+
+        # Pages 1 and 0 are cold and must be submitted to async_renderer (page 1 is at anchor y=100)
+        self.assertEqual(len(submitted_jobs), 3)  # 2 visible + 1 preload neighbor
+        self.assertEqual(submitted_jobs[0]["page_file"], Path("p1.png"))
+        self.assertEqual(submitted_jobs[0]["priority"], 0)
+        self.assertEqual(submitted_jobs[1]["page_file"], Path("p0.png"))
+        self.assertEqual(submitted_jobs[1]["priority"], 1)
+        # Preload for neighbor page 2
+        self.assertEqual(submitted_jobs[2]["page_file"], Path("p2.png"))
+        self.assertEqual(submitted_jobs[2]["priority"], 10)
+
+        # Async poll job should be scheduled on the canvas
+        self.assertIsNotNone(reader._async_poll_job)
+
 
 if __name__ == "__main__":
     unittest.main()
+
