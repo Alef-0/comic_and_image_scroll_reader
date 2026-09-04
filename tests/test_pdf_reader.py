@@ -245,6 +245,54 @@ class PdfReaderTests(unittest.TestCase):
                 holder.join(timeout=2.0)
                 bookshelf.close()
 
+    def test_multiprocess_pdf_region_rendering(self) -> None:
+        from comic_scroll_reader.imaging.async_renderer import AsyncRenderer
+
+        with tempfile.TemporaryDirectory() as temporary:
+            pdf_file = Path(temporary) / "multi_render.pdf"
+            self._create_sample_pdf(pdf_file, [(200, 300), (200, 300)])
+            bookshelf = PdfBookshelf(pdf_file, scale=1.0)
+            renderer = AsyncRenderer(max_workers=2, max_pending=4, backend="process")
+
+            try:
+                # Submit jobs for two different pages to the multiprocessing renderer
+                p0 = bookshelf.pages[0]
+                p1 = bookshelf.pages[1]
+
+                renderer.submit(
+                    priority=0,
+                    generation=1,
+                    page_file=p0.file,
+                    region_key=(p0.file, 0, 0),
+                    source_box=(0.0, 0.0, 100.0, 150.0),
+                    target_size=(50, 75),
+                )
+                renderer.submit(
+                    priority=0,
+                    generation=1,
+                    page_file=p1.file,
+                    region_key=(p1.file, 0, 0),
+                    source_box=(0.0, 0.0, 100.0, 150.0),
+                    target_size=(50, 75),
+                )
+
+                collected = []
+                for _ in range(50):
+                    results = renderer.get_results()
+                    collected.extend(results)
+                    if len(collected) >= 2:
+                        break
+                    time.sleep(0.02)
+
+                self.assertEqual(len(collected), 2)
+                for res in collected:
+                    self.assertIsNotNone(res.image)
+                    self.assertEqual(res.image.size, (50, 75))
+                    res.image.close()
+            finally:
+                renderer.shutdown()
+                bookshelf.close()
+
 
 if __name__ == "__main__":
     unittest.main()

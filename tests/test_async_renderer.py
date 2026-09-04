@@ -209,7 +209,7 @@ class AsyncRendererTests(unittest.TestCase):
             unregister_page_provider,
         )
 
-        renderer = AsyncRenderer(max_workers=1, max_pending=4)
+        renderer = AsyncRenderer(max_workers=1, max_pending=4, backend="thread")
         entered_event = threading.Event()
         release_event = threading.Event()
 
@@ -258,6 +258,40 @@ class AsyncRendererTests(unittest.TestCase):
         finally:
             unregister_page_provider(fake_file)
             renderer.shutdown()
+
+    def test_has_pending_work_tracks_in_flight_process(self) -> None:
+        renderer = AsyncRenderer(max_workers=1, max_pending=4, backend="process")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            img_path = Path(temp_dir) / "test_busy.png"
+            Image.new("RGB", (400, 400), (50, 100, 150)).save(img_path)
+
+            renderer.submit(
+                priority=0,
+                generation=1,
+                page_file=img_path,
+                region_key=(img_path, 0, 0),
+                source_box=(0.0, 0.0, 200.0, 200.0),
+                target_size=(100, 100),
+            )
+
+            # While work is queued or in worker process, has_pending_work must be True
+            self.assertTrue(renderer.has_pending_work)
+
+            # Wait for results
+            results = []
+            for _ in range(50):
+                results = renderer.get_results()
+                if results:
+                    break
+                time.sleep(0.02)
+
+            self.assertEqual(len(results), 1)
+            results[0].image.close()
+
+            # After draining result queue, has_pending_work must become False
+            self.assertFalse(renderer.has_pending_work)
+
+        renderer.shutdown()
 
 
 if __name__ == "__main__":

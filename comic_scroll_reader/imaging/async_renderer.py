@@ -165,12 +165,13 @@ class BoundedRequestQueue:
 
 
 class AsyncRenderer:
-    """Manages worker threads to rasterize comic page regions in the background."""
+    """Manages background workers (processes or threads) to rasterize comic page regions."""
 
     def __init__(
         self,
         max_workers: int | None = None,
         max_pending: int = 16,
+        backend: str = "process",
     ) -> None:
         cpu_count = os.cpu_count() or 2
         workers = (
@@ -179,24 +180,64 @@ class AsyncRenderer:
             else max(1, min(4, cpu_count - 1))
         )
         self.max_workers = workers
+        self.backend = backend
         self.request_queue = BoundedRequestQueue(max_pending=max_pending)
         self.result_queue: queue.Queue[RenderResult] = queue.Queue()
         self._current_generation = 0
-        self._threads: list[threading.Thread] = []
         self._closed = False
-        self._start_workers()
 
-    def _start_workers(self) -> None:
+        if self.backend == "process":
+            from ..communications.channel import (
+                get_mp_context,
+            )
+            from ..communications.worker import render_worker_main
+
+            self._ctx = get_mp_context()
+            self._task_queue = self._ctx.Queue(maxsize=max_pending * 2)
+            self._worker_result_queue = self._ctx.Queue()
+            self._stop_event = self._ctx.Event()
+            self._processes: list[Any] = []
+            self._in_flight: dict[tuple[int, tuple[Any, ...]], RenderRequest] = {}
+            self._in_flight_lock = threading.Lock()
+
+            for i in range(self.max_workers):
+                proc = self._ctx.Process(
+                    target=render_worker_main,
+                    args=(self._task_queue, self._worker_result_queue, self._stop_event),
+                    name=f"CSR-RenderProc-{i + 1}",
+                    daemon=True,
+                )
+                proc.start()
+                self._processes.append(proc)
+
+            self._dispatcher_thread = threading.Thread(
+                target=self._process_dispatch_loop,
+                name="CSR-ProcessDispatcher",
+                daemon=True,
+            )
+            self._dispatcher_thread.start()
+
+            self._collector_thread = threading.Thread(
+                target=self._process_collector_loop,
+                name="CSR-ProcessCollector",
+                daemon=True,
+            )
+            self._collector_thread.start()
+        else:
+            self._threads: list[threading.Thread] = []
+            self._start_thread_workers()
+
+    def _start_thread_workers(self) -> None:
         for i in range(self.max_workers):
             thread = threading.Thread(
-                target=self._worker_loop,
+                target=self._thread_worker_loop,
                 name=f"CSR-RenderWorker-{i + 1}",
                 daemon=True,
             )
             thread.start()
             self._threads.append(thread)
 
-    def _worker_loop(self) -> None:
+    def _thread_worker_loop(self) -> None:
         while not self._closed:
             request = self.request_queue.get()
             if request is None:
@@ -224,8 +265,6 @@ class AsyncRenderer:
                         rendered.save(buffer, format="WEBP", quality=85, method=0)
                         webp_bytes = buffer.getvalue()
                     except Exception:
-                        # The decoded image is still useful for the current
-                        # viewport even when optional cache compression fails.
                         webp_bytes = None
 
                 if self._closed or request.generation < self._current_generation:
@@ -243,9 +282,101 @@ class AsyncRenderer:
                     )
                 )
             finally:
-                # Publish before releasing the identity so polling never sees a
-                # false "all work drained" state between rendering and enqueue.
                 self.request_queue.task_done(request)
+
+    def _process_dispatch_loop(self) -> None:
+        from ..communications.messages import RenderTask
+
+        while not self._closed:
+            request = self.request_queue.get()
+            if request is None:
+                break
+            if request.generation < self._current_generation:
+                self.request_queue.task_done(request)
+                continue
+
+            resample_code = (
+                request.resample.value
+                if hasattr(request.resample, "value")
+                else int(request.resample)
+            )
+            task = RenderTask(
+                priority=request.priority,
+                sequence=request.sequence,
+                generation=request.generation,
+                page_file=request.page_file,
+                region_key=request.region_key,
+                source_box=request.source_box,
+                target_size=request.target_size,
+                resample_code=resample_code,
+            )
+            key = (request.generation, request.region_key)
+            with self._in_flight_lock:
+                self._in_flight[key] = request
+
+            try:
+                self._task_queue.put(task)
+            except Exception:
+                with self._in_flight_lock:
+                    self._in_flight.pop(key, None)
+                self.request_queue.task_done(request)
+                break
+
+    def _process_collector_loop(self) -> None:
+        from ..communications.messages import RenderResponse
+
+        while not self._closed:
+            try:
+                response = self._worker_result_queue.get(timeout=0.1)
+            except (queue.Empty, TimeoutError):
+                continue
+            except (OSError, EOFError, ValueError):
+                break
+
+            if not isinstance(response, RenderResponse):
+                continue
+
+            key = (response.generation, response.region_key)
+            with self._in_flight_lock:
+                orig_request = self._in_flight.pop(key, None)
+
+            image: Image.Image | None = None
+            if response.webp_bytes is not None:
+                try:
+                    image = Image.open(io.BytesIO(response.webp_bytes))
+                    image.load()
+                except Exception:
+                    image = None
+            elif response.raw_bytes is not None and response.raw_mode is not None:
+                try:
+                    image = Image.frombytes(
+                        response.raw_mode, response.target_size, response.raw_bytes
+                    )
+                    image.load()
+                except Exception:
+                    image = None
+
+            if self._closed or response.generation < self._current_generation:
+                if image is not None:
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
+                if orig_request is not None:
+                    self.request_queue.task_done(orig_request)
+                continue
+
+            self.result_queue.put(
+                RenderResult(
+                    generation=response.generation,
+                    page_file=response.page_file,
+                    region_key=response.region_key,
+                    image=image,
+                    webp_bytes=response.webp_bytes,
+                )
+            )
+            if orig_request is not None:
+                self.request_queue.task_done(orig_request)
 
     def submit(
         self,
@@ -275,6 +406,13 @@ class AsyncRenderer:
         """Update active generation and prune stale unstarted requests."""
         self._current_generation = generation
         self.request_queue.cancel_stale_generations(generation)
+        if self.backend == "process" and hasattr(self, "_in_flight_lock"):
+            with self._in_flight_lock:
+                stale_keys = [k for k in self._in_flight if k[0] < generation]
+                for k in stale_keys:
+                    req = self._in_flight.pop(k, None)
+                    if req is not None:
+                        self.request_queue.task_done(req)
 
     def cancel_all(self) -> None:
         """Cancel all pending, unstarted work."""
@@ -301,6 +439,52 @@ class AsyncRenderer:
             return
         self._closed = True
         self.request_queue.close()
+
+        if self.backend == "process":
+            from ..communications.channel import (
+                drain_queue,
+                safe_close_queue,
+                safe_terminate_process,
+            )
+            from ..communications.messages import ShutdownSentinel
+
+            if hasattr(self, "_stop_event"):
+                self._stop_event.set()
+
+            if hasattr(self, "_task_queue") and hasattr(self, "_processes"):
+                for _ in self._processes:
+                    try:
+                        self._task_queue.put_nowait(ShutdownSentinel())
+                    except Exception:
+                        pass
+
+            if hasattr(self, "_worker_result_queue"):
+                drain_queue(self._worker_result_queue, timeout=0.2)
+
+            if hasattr(self, "_processes"):
+                for proc in self._processes:
+                    safe_terminate_process(proc, timeout=1.0)
+                self._processes.clear()
+
+            if hasattr(self, "_dispatcher_thread"):
+                self._dispatcher_thread.join(timeout=1.0)
+            if hasattr(self, "_collector_thread"):
+                self._collector_thread.join(timeout=1.0)
+
+            if hasattr(self, "_task_queue"):
+                safe_close_queue(self._task_queue)
+            if hasattr(self, "_worker_result_queue"):
+                safe_close_queue(self._worker_result_queue)
+
+            if hasattr(self, "_in_flight_lock"):
+                with self._in_flight_lock:
+                    for req in self._in_flight.values():
+                        try:
+                            self.request_queue.task_done(req)
+                        except Exception:
+                            pass
+                    self._in_flight.clear()
+
         # Drain any leftover results and close images
         while True:
             try:

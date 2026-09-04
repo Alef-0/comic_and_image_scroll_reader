@@ -23,7 +23,9 @@ def _use_project_environment_for_drag_and_drop() -> None:
 _use_project_environment_for_drag_and_drop()
 
 from comic_scroll_reader.app import main
+import multiprocessing as mp
 
 
 if __name__ == "__main__":
+    mp.freeze_support()
     raise SystemExit(main())

@@ -75,9 +75,21 @@ def render_registered_page_region(
     """Render a cropped virtual PDF page, or return None when it is not registered."""
     with _REGISTRY_LOCK:
         provider = _REGION_PROVIDERS.get(file.resolve())
-    if provider is None:
-        return None
-    return provider(source_box, target_size)
+    if provider is not None:
+        return provider(source_box, target_size)
+
+    meta_file = file.parent / "csr_pdf_metadata.json"
+    if meta_file.is_file():
+        from ..communications.pdf_bridge import render_pdf_region_from_metadata
+        import re
+
+        match = re.search(r"page_(\d+)", file.name)
+        if match:
+            idx = int(match.group(1)) - 1
+            return render_pdf_region_from_metadata(
+                meta_file, idx, source_box, target_size
+            )
+    return None
 
 
 def render_registered_page_thumbnail(
@@ -134,6 +146,26 @@ class PdfBookshelf:
                 ),
                 lambda max_size, idx=i: self._render_page_thumbnail(idx, max_size),
             )
+        self._write_metadata()
+
+    def _write_metadata(self) -> None:
+        import json
+
+        meta_path = self.cache_dir / "csr_pdf_metadata.json"
+        data = {
+            "pdf_path": str(self.pdf_path),
+            "scale": self.scale,
+            "page_count": self.page_count,
+            "pages": [
+                {"width": page.native_width, "height": page.native_height}
+                for page in self.pages
+            ],
+        }
+        try:
+            with open(meta_path, "w", encoding="utf-8") as file:
+                json.dump(data, file)
+        except Exception:
+            pass
 
     def _render_page_on_demand(self, index: int) -> None:
         if self._closed or index < 0 or index >= self.page_count:

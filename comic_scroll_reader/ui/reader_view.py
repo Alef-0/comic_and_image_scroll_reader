@@ -137,12 +137,7 @@ class ComicStrip:
         self._memory_trim_job: str | None = None
         self._async_poll_job: str | None = None
         self._render_generation = 0
-        pdf_workers = (
-            1
-            if not is_folder and folder.suffix.casefold() in PDF_SUFFIXES
-            else None
-        )
-        self.async_renderer = AsyncRenderer(max_workers=pdf_workers)
+        self.async_renderer = AsyncRenderer()
         self._zoom_stash: deque[tuple[int, int]] = deque()
         self._pending_render_indices: list[int] = []
         self._pending_preload_indices: list[int] = []
@@ -1039,12 +1034,7 @@ class ComicStrip:
         self.pages = pages
         self.folder = folder
         self.is_folder = is_folder
-        pdf_workers = (
-            1
-            if not is_folder and folder.suffix.casefold() in PDF_SUFFIXES
-            else None
-        )
-        self.async_renderer = AsyncRenderer(max_workers=pdf_workers)
+        self.async_renderer = AsyncRenderer()
         self._render_generation += 1
         self.async_renderer.set_current_generation(self._render_generation)
         self._failed_regions.clear()
