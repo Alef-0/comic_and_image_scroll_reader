@@ -460,7 +460,7 @@ class ReaderViewTests(unittest.TestCase):
             reader.ready_photos.get((reader.pages[5].file, 100, 100, 0, 0, 100, 100)), "photo_5"
         )
 
-    def test_zoomed_region_is_bounded_to_viewport_plus_overscan(self) -> None:
+    def test_zoomed_view_is_split_into_bounded_tiles(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.viewport_width = 960
         reader.viewport_height = 1_006
@@ -473,24 +473,14 @@ class ReaderViewTests(unittest.TestCase):
         page = ComicPage(Path("page.webp"), 4_970, 6_992)
         position = PagePosition(-1_440, 0, 3_840, 5_402)
 
-        key = reader._region_key(page, position)
+        keys = reader._region_keys(page, position)
 
-        self.assertIsNotNone(key)
-        horizontal_extra = (
-            2 * max(reader.HORIZONTAL_REGION_OVERSCAN, reader.viewport_width)
-            + reader.REGION_GRANULARITY
-            - 1
+        self.assertGreater(len(keys), 1)
+        self.assertTrue(all(key[5] <= reader.TILE_SIZE for key in keys))
+        self.assertTrue(all(key[6] <= reader.TILE_SIZE for key in keys))
+        self.assertTrue(
+            all(key[5] * key[6] * 4 <= 4 * 1024 * 1024 for key in keys)
         )
-        vertical_extra = (
-            2 * max(reader.VERTICAL_REGION_OVERSCAN, reader.viewport_height)
-            + reader.REGION_GRANULARITY
-            - 1
-        )
-        self.assertGreaterEqual(key[5], 3 * reader.viewport_width)
-        self.assertLessEqual(key[5], 960 + horizontal_extra)
-        self.assertGreaterEqual(key[6], 3 * reader.viewport_height)
-        self.assertLessEqual(key[6], 1_006 + vertical_extra)
-        self.assertLess(key[5] * key[6] * 4, 38 * 1024 * 1024)
 
     def test_vertical_overscan_keeps_five_tick_scroll_sharp(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
@@ -505,11 +495,14 @@ class ReaderViewTests(unittest.TestCase):
         page = ComicPage(Path("large-page.webp"), 2_000, 20_000)
         position = PagePosition(0, 0, 1_000, 10_000)
 
-        rendered_region = reader._region_key(page, position)
+        rendered_regions = reader._region_keys(page, position)
         reader.scroll_y += 5 * reader.WHEEL_STEP
 
-        self.assertTrue(
-            reader._region_covers_visible_area(rendered_region, position)
+        visible_top = reader.scroll_y - position.y
+        visible_bottom = visible_top + reader.viewport_height
+        self.assertLessEqual(min(key[4] for key in rendered_regions), visible_top)
+        self.assertGreaterEqual(
+            max(key[4] + key[6] for key in rendered_regions), visible_bottom
         )
 
     def test_horizontal_overscan_keeps_five_tick_pan_sharp(self) -> None:
@@ -525,11 +518,14 @@ class ReaderViewTests(unittest.TestCase):
         page = ComicPage(Path("wide-page.webp"), 10_000, 2_000)
         position = PagePosition(0, 0, 10_000, 2_000)
 
-        rendered_region = reader._region_key(page, position)
+        rendered_regions = reader._region_keys(page, position)
         reader.pan_x += 5 * reader.WHEEL_STEP
 
-        self.assertTrue(
-            reader._region_covers_visible_area(rendered_region, position)
+        visible_left = -(position.x + reader.pan_x)
+        visible_right = visible_left + reader.viewport_width
+        self.assertLessEqual(min(key[3] for key in rendered_regions), visible_left)
+        self.assertGreaterEqual(
+            max(key[3] + key[5] for key in rendered_regions), visible_right
         )
 
     def test_horizontal_overscan_keeps_double_page_spread_sharp_when_panning(self) -> None:
@@ -563,7 +559,7 @@ class ReaderViewTests(unittest.TestCase):
         reader.pan_x = -512
         self.assertTrue(reader._region_covers_visible_area(right_region, right_pos))
 
-    def test_double_page_mode_renders_offscreen_page_in_spread(self) -> None:
+    def test_double_page_mode_skips_fully_offscreen_page_until_panned_in(self) -> None:
         reader = ComicStrip.__new__(ComicStrip)
         reader.viewport_width = 1_000
         reader.viewport_height = 1_000
@@ -577,11 +573,9 @@ class ReaderViewTests(unittest.TestCase):
 
         left_page = ComicPage(Path("left.webp"), 1_200, 1_800)
         left_pos = PagePosition(-300, 0, 800, 1_200)
-        left_region = reader._region_key(left_page, left_pos)
-
-        self.assertIsNotNone(left_region)
-        reader.pan_x = 0
-        self.assertTrue(reader._region_covers_visible_area(left_region, left_pos))
+        self.assertEqual(reader._region_keys(left_page, left_pos), [])
+        reader.pan_x = 300
+        self.assertNotEqual(reader._region_keys(left_page, left_pos), [])
 
     def test_paint_dispatches_cold_pages_to_async_renderer(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
@@ -624,11 +618,13 @@ class ReaderViewTests(unittest.TestCase):
         # paint covers pages 0 and 1
         reader.paint()
 
-        # Pages 1 and 0 are cold and must be submitted to async_renderer (page 1 is at anchor y=100)
+        # Both visible pages are submitted before the neighboring preload.
         self.assertEqual(len(submitted_jobs), 3)  # 2 visible + 1 preload neighbor
-        self.assertEqual(submitted_jobs[0]["page_file"], Path("p1.png"))
+        self.assertEqual(
+            {job["page_file"] for job in submitted_jobs[:2]},
+            {Path("p0.png"), Path("p1.png")},
+        )
         self.assertEqual(submitted_jobs[0]["priority"], 0)
-        self.assertEqual(submitted_jobs[1]["page_file"], Path("p0.png"))
         self.assertEqual(submitted_jobs[1]["priority"], 1)
         # Preload for neighbor page 2
         self.assertEqual(submitted_jobs[2]["page_file"], Path("p2.png"))
@@ -660,9 +656,10 @@ class ReaderViewTests(unittest.TestCase):
         reader._render_job = None
         reader._preload_job = None
         reader._zoom_stash = deque([(1, 200), (1, 200)])
-        reader.pages = []
+        reader.pages = [object()]
         reader._arrange_strip = lambda: None
         reader._show_status = lambda: None
+        reader._schedule_memory_trim = lambda: None
 
         paints: list[bool] = []
         reader.paint = lambda priority_y=None, is_interactive=False: paints.append(is_interactive)
@@ -671,9 +668,12 @@ class ReaderViewTests(unittest.TestCase):
         reader._apply_next_zoom_step()
         self.assertEqual(paints, [True])
 
-        # Step 2: final zoom (stash becomes empty) -> is_interactive=False (settled dispatch)
+        # The final input remains preview-only until the idle callback runs.
         reader._apply_next_zoom_step()
-        self.assertEqual(paints, [True, False])
+        self.assertEqual(paints, [True, True])
+
+        reader._finish_sequential_zoom()
+        self.assertEqual(paints, [True, True, False])
 
     def test_paint_creates_and_evicts_placeholder_zones(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
@@ -751,21 +751,21 @@ class ReaderViewTests(unittest.TestCase):
         reader._render_generation = 1
         reader._failed_regions = {}
         reader.PRELOAD_DISTANCE = 1
+        reader.viewport_width = 100
+        reader.viewport_height = 100
+        reader.pan_x = 0
+        reader.scroll_y = 100
         reader.drawn_webp_cache = MemoryShelf(100, lambda _k, _v: 1)
         reader.ready_photos = MemoryShelf(100, lambda _k, _v: 1)
-        reader._region_key = lambda page, _position, vertical_edge=None: (
-            page.file,
-            100,
-            100,
-            0,
-            0,
-            100,
-            100,
-        )
 
         for index in (0, 2):
-            key = reader._region_key(reader.pages[index], reader.positions[index])
-            reader.drawn_webp_cache.store(key, b"cached")
+            edge = "bottom" if index == 0 else "top"
+            for key in reader._region_keys(
+                reader.pages[index],
+                reader.positions[index],
+                vertical_edge=edge,
+            ):
+                reader.drawn_webp_cache.store(key, b"cached")
 
         submitted = []
         reader.async_renderer = SimpleNamespace(
@@ -778,7 +778,7 @@ class ReaderViewTests(unittest.TestCase):
         self.assertEqual(submitted, [])
         self.assertIsNone(reader._async_poll_job)
 
-    def test_scroll_retains_crisp_region_while_it_covers_viewport(self) -> None:
+    def test_scroll_retains_crisp_tile_while_view_stays_in_same_tile(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
 
         reader = ComicStrip.__new__(ComicStrip)
@@ -817,7 +817,8 @@ class ReaderViewTests(unittest.TestCase):
         reader.pages = [page]
         reader.positions = [position]
         old_key = reader._region_key(page, position)
-        reader.canvas_pages = {page_file: (1, object(), old_key)}
+        reader.canvas_pages = {page_file: {old_key: (1, object(), old_key)}}
+        reader._preview_regions = set()
 
         submitted = []
         reader.async_renderer = SimpleNamespace(
@@ -828,17 +829,17 @@ class ReaderViewTests(unittest.TestCase):
 
         reader.scroll_y = 350
         new_key = reader._region_key(page, position)
-        self.assertNotEqual(old_key, new_key)
+        self.assertEqual(old_key, new_key)
         self.assertTrue(reader._region_covers_visible_area(old_key, position))
 
         reader.paint()
 
         self.assertEqual(created_images, [])
-        self.assertEqual(reader.canvas_pages[page_file][2], old_key)
+        self.assertIn(old_key, reader.canvas_pages[page_file])
         self.assertNotIn(page_file, reader._preview_pages)
-        self.assertEqual(submitted[0]["region_key"], new_key)
+        self.assertEqual(submitted, [])
 
-    def test_scroll_uses_preview_before_old_region_exposes_bottom_gap(self) -> None:
+    def test_scroll_adds_preview_when_a_new_tile_enters_view(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
 
         reader = ComicStrip.__new__(ComicStrip)
@@ -872,12 +873,13 @@ class ReaderViewTests(unittest.TestCase):
         reader._pending_preload_indices = []
 
         page_file = Path("tall-page.png")
-        page = ComicPage(page_file, 100, 1000)
-        position = PagePosition(0, 0, 100, 1000)
+        page = ComicPage(page_file, 100, 3000)
+        position = PagePosition(0, 0, 100, 3000)
         reader.pages = [page]
         reader.positions = [position]
         old_key = reader._region_key(page, position)
-        reader.canvas_pages = {page_file: (1, object(), old_key)}
+        reader.canvas_pages = {page_file: {old_key: (1, object(), old_key)}}
+        reader._preview_regions = set()
         preview_photo = object()
         reader._get_blurred_preview_photo = lambda _page, _key: preview_photo
 
@@ -888,19 +890,19 @@ class ReaderViewTests(unittest.TestCase):
             cancel_all=lambda: None,
         )
 
-        # The old crop ends at y=640. At this position, the viewport reaches
-        # y=700, so retaining it would expose a 60-pixel black strip below it.
-        reader.scroll_y = 500
-        new_key = reader._region_key(page, position)
-        self.assertFalse(reader._region_covers_visible_area(old_key, position))
+        reader.scroll_y = 1_100
+        new_keys = reader._region_keys(page, position)
+        new_key = next(key for key in new_keys if key[4] == 1024)
 
         reader.paint()
 
-        self.assertEqual(len(created_images), 1)
-        self.assertIs(created_images[0][1]["image"], preview_photo)
-        self.assertEqual(reader.canvas_pages[page_file][2], new_key)
+        self.assertGreaterEqual(len(created_images), 1)
+        self.assertTrue(
+            any(created[1]["image"] is preview_photo for created in created_images)
+        )
+        self.assertIn(new_key, reader.canvas_pages[page_file])
         self.assertIn(page_file, reader._preview_pages)
-        self.assertEqual(submitted[0]["region_key"], new_key)
+        self.assertIn(new_key, {job["region_key"] for job in submitted})
 
     def test_identical_blurred_preview_is_reused_during_fast_scroll(self) -> None:
         from comic_scroll_reader.core.memory import MemoryShelf
@@ -940,8 +942,11 @@ class ReaderViewTests(unittest.TestCase):
         reader.pages = [page]
         reader.positions = [position]
         region_key = reader._region_key(page, position)
-        reader.canvas_pages = {page_file: (1, object(), region_key)}
+        reader.canvas_pages = {
+            page_file: {region_key: (1, object(), region_key)}
+        }
         reader._preview_pages = {page_file}
+        reader._preview_regions = {region_key}
         reader._failed_regions[region_key] = reader.MAX_RENDER_ATTEMPTS - 1
 
         submitted = []

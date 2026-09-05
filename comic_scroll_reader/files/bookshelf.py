@@ -1,6 +1,7 @@
 """Find, inspect, and open comic pages from a directory or file list."""
 
 from collections.abc import Iterable
+import math
 from pathlib import Path
 import re
 import sys
@@ -56,6 +57,28 @@ def open_page(file: Path) -> Image.Image | None:
         return None
 
 
+def _jpeg_draft_target(
+    source: Image.Image,
+    source_box: tuple[float, float, float, float],
+    target_size: tuple[int, int],
+) -> tuple[int, int]:
+    """Choose a reduced JPEG decode size that still covers the requested crop."""
+    display_width, display_height = display_size(source)
+    crop_width = max(1.0, source_box[2] - source_box[0])
+    crop_height = max(1.0, source_box[3] - source_box[1])
+    wanted_display_width = min(
+        display_width,
+        max(1, math.ceil(display_width * target_size[0] / crop_width)),
+    )
+    wanted_display_height = min(
+        display_height,
+        max(1, math.ceil(display_height * target_size[1] / crop_height)),
+    )
+    if (display_width, display_height) != source.size:
+        return wanted_display_height, wanted_display_width
+    return wanted_display_width, wanted_display_height
+
+
 def render_page_region(
     file: Path,
     source_box: tuple[float, float, float, float],
@@ -76,16 +99,24 @@ def render_page_region(
         return None
     try:
         with Image.open(file) as source:
+            original_display_size = display_size(source)
+            if source.format in {"JPEG", "MPO"}:
+                source.draft(
+                    "RGB",
+                    _jpeg_draft_target(source, source_box, target_size),
+                )
             oriented = ImageOps.exif_transpose(source)
             converted = oriented
             try:
                 if oriented.mode != "RGB":
                     converted = oriented.convert("RGB")
                 img_w, img_h = float(converted.width), float(converted.height)
-                x0 = max(0.0, min(img_w, float(source_box[0])))
-                y0 = max(0.0, min(img_h, float(source_box[1])))
-                x1 = max(x0, min(img_w, float(source_box[2])))
-                y1 = max(y0, min(img_h, float(source_box[3])))
+                scale_x = img_w / max(1, original_display_size[0])
+                scale_y = img_h / max(1, original_display_size[1])
+                x0 = max(0.0, min(img_w, float(source_box[0]) * scale_x))
+                y0 = max(0.0, min(img_h, float(source_box[1]) * scale_y))
+                x1 = max(x0, min(img_w, float(source_box[2]) * scale_x))
+                y1 = max(y0, min(img_h, float(source_box[3]) * scale_y))
                 if x1 <= x0 or y1 <= y0:
                     return None
                 rendered = converted.resize(

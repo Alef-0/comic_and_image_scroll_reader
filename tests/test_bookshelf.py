@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from PIL import Image
+from PIL import Image, JpegImagePlugin
 
 from comic_scroll_reader.files.bookshelf import (
     load_pages,
@@ -92,6 +92,37 @@ class BookshelfTests(unittest.TestCase):
 
         self.assertIsNotNone(rendered)
         self.assertEqual(rendered.size, (320, 240))
+        rendered.close()
+
+    def test_render_page_region_requests_reduced_jpeg_decode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "large-page.jpg"
+            Image.new("RGB", (1_600, 1_200), "orange").save(file)
+            draft_calls: list[tuple[str, tuple[int, int]]] = []
+            original_draft = JpegImagePlugin.JpegImageFile.draft
+
+            def recording_draft(
+                image: JpegImagePlugin.JpegImageFile,
+                mode: str,
+                size: tuple[int, int],
+            ) -> tuple[str, tuple[int, int, int, int]] | None:
+                draft_calls.append((mode, size))
+                return original_draft(image, mode, size)
+
+            with patch.object(
+                JpegImagePlugin.JpegImageFile,
+                "draft",
+                new=recording_draft,
+            ):
+                rendered = render_page_region(
+                    file,
+                    (0.0, 0.0, 1_600.0, 1_200.0),
+                    (200, 150),
+                )
+
+        self.assertEqual(draft_calls, [("RGB", (200, 150))])
+        self.assertIsNotNone(rendered)
+        self.assertEqual(rendered.size, (200, 150))
         rendered.close()
 
     def test_render_page_region_with_fractional_boxes(self) -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import heapq
 import io
-import os
 from pathlib import Path
 import queue
 import threading
@@ -171,16 +170,15 @@ class AsyncRenderer:
         self,
         max_workers: int | None = None,
         max_pending: int = 16,
+        max_results: int | None = None,
     ) -> None:
-        cpu_count = os.cpu_count() or 2
-        workers = (
-            max_workers
-            if max_workers is not None
-            else max(1, min(4, cpu_count - 1))
-        )
+        workers = max_workers if max_workers is not None else 2
+        workers = max(1, workers)
         self.max_workers = workers
         self.request_queue = BoundedRequestQueue(max_pending=max_pending)
-        self.result_queue: queue.Queue[RenderResult] = queue.Queue()
+        self.result_queue: queue.Queue[RenderResult] = queue.Queue(
+            maxsize=max_results or max(2, workers * 2)
+        )
         self._current_generation = 0
         self._threads: list[threading.Thread] = []
         self._closed = False
@@ -233,7 +231,7 @@ class AsyncRenderer:
                         rendered.close()
                     continue
 
-                self.result_queue.put(
+                self._publish_result(
                     RenderResult(
                         generation=request.generation,
                         page_file=request.page_file,
@@ -246,6 +244,28 @@ class AsyncRenderer:
                 # Publish before releasing the identity so polling never sees a
                 # false "all work drained" state between rendering and enqueue.
                 self.request_queue.task_done(request)
+
+    @staticmethod
+    def _close_result(result: RenderResult) -> None:
+        if result.image is not None:
+            try:
+                result.image.close()
+            except Exception:
+                pass
+
+    def _publish_result(self, result: RenderResult) -> None:
+        """Publish without allowing completed image buffers to grow unbounded."""
+        while not self._closed:
+            try:
+                self.result_queue.put_nowait(result)
+                return
+            except queue.Full:
+                try:
+                    discarded = self.result_queue.get_nowait()
+                except queue.Empty:
+                    continue
+                self._close_result(discarded)
+        self._close_result(result)
 
     def submit(
         self,
@@ -275,6 +295,18 @@ class AsyncRenderer:
         """Update active generation and prune stale unstarted requests."""
         self._current_generation = generation
         self.request_queue.cancel_stale_generations(generation)
+        retained: list[RenderResult] = []
+        while True:
+            try:
+                result = self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+            if result.generation < generation:
+                self._close_result(result)
+            else:
+                retained.append(result)
+        for result in retained:
+            self._publish_result(result)
 
     def cancel_all(self) -> None:
         """Cancel all pending, unstarted work."""
@@ -305,10 +337,6 @@ class AsyncRenderer:
         while True:
             try:
                 result = self.result_queue.get_nowait()
-                if result.image is not None:
-                    try:
-                        result.image.close()
-                    except Exception:
-                        pass
+                self._close_result(result)
             except queue.Empty:
                 break

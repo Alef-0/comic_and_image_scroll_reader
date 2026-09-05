@@ -10,10 +10,43 @@ from PIL import Image
 from comic_scroll_reader.imaging.async_renderer import (
     AsyncRenderer,
     BoundedRequestQueue,
+    RenderResult,
 )
 
 
 class AsyncRendererTests(unittest.TestCase):
+    def test_default_worker_count_is_memory_bounded(self) -> None:
+        renderer = AsyncRenderer()
+        try:
+            self.assertEqual(renderer.max_workers, 2)
+            self.assertEqual(renderer.result_queue.maxsize, 4)
+        finally:
+            renderer.shutdown()
+
+    def test_completed_result_queue_discards_oldest_image_when_full(self) -> None:
+        renderer = AsyncRenderer(max_workers=1, max_results=2)
+        images = [Image.new("RGB", (10, 10)) for _ in range(3)]
+        try:
+            for generation, image in enumerate(images, start=1):
+                renderer._publish_result(
+                    RenderResult(
+                        generation=generation,
+                        page_file=Path(f"page-{generation}.png"),
+                        region_key=(generation,),
+                        image=image,
+                    )
+                )
+
+            self.assertEqual(renderer.result_queue.qsize(), 2)
+            with self.assertRaises(ValueError):
+                images[0].getpixel((0, 0))
+            results = renderer.get_results()
+            self.assertEqual([result.generation for result in results], [2, 3])
+            for result in results:
+                result.image.close()
+        finally:
+            renderer.shutdown()
+
     def test_queue_priority_and_deduplication(self) -> None:
         queue = BoundedRequestQueue(max_pending=4)
         file = Path("/tmp/test.png")
