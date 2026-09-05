@@ -35,6 +35,21 @@ Or open an image folder directly:
 python3 run_reader.py /path/to/comic
 ```
 
+The Qt frontend provides the same continuous-reading controls with its own
+single-process, background image loader. It progressively builds a small
+retained fallback for every page, while visible pages receive priority and a
+larger bounded cache keeps recently viewed sharp pages. Install its optional
+dependency once, then run it with an image folder, selected images, or a PDF:
+
+```bash
+.venv/bin/python -m pip install 'PySide6>=6.8'
+python3 run_reader_qt.py /path/to/comic
+python3 run_reader_qt.py /path/to/comic.pdf
+```
+
+When no path is supplied, the Qt version opens its folder picker. It also
+accepts folders, images, and PDFs by drag and drop.
+
 The reader restores its last window size, position, and maximized state. To
 override that saved state and start in a normal window:
 
